@@ -26,10 +26,12 @@ fi
 
 # 2. Install the runtime scripts (stable copies).
 mkdir -p "$BIN"
-install -m 0755 "$REPO/hooks/capture.sh"  "$BIN/devbrain-capture.sh"
-install -m 0755 "$REPO/scripts/flush.sh"  "$BIN/devbrain-flush.sh"
+install -m 0755 "$REPO/hooks/capture.sh"         "$BIN/devbrain-capture.sh"
+install -m 0755 "$REPO/scripts/flush.sh"         "$BIN/devbrain-flush.sh"
+install -m 0755 "$REPO/scripts/rebuild-brain.sh" "$BIN/devbrain-rebuild.sh"
 echo "  installed $BIN/devbrain-capture.sh"
 echo "  installed $BIN/devbrain-flush.sh"
+echo "  installed $BIN/devbrain-rebuild.sh"
 
 # 3. Register the UserPromptSubmit hook in settings.json (idempotent; backup first).
 settings="$CLAUDE/settings.json"
@@ -58,5 +60,39 @@ launchctl unload "$plist" 2>/dev/null || true
 launchctl load "$plist"
 echo "  loaded flusher LaunchAgent (every 5 min) -> $plist"
 
+# 5. Install the user-level skills (/continue, /distill) so they work in any repo.
+skills="$CLAUDE/skills"
+mkdir -p "$skills"
+for s in "$REPO"/skills/*/; do
+  [ -d "$s" ] || continue
+  name="$(basename "$s")"
+  rm -rf "$skills/$name"
+  cp -R "$s" "$skills/$name"
+  echo "  installed skill /$name"
+done
+
+# 6. Standing instruction in ~/.claude/CLAUDE.md (idempotent; marker-delimited).
+md="$CLAUDE/CLAUDE.md"
+start="<!-- devbrain:start -->"
+end="<!-- devbrain:end -->"
+[ -f "$md" ] || : > "$md"
+# Strip any prior block, then append a fresh one.
+tmp="$(mktemp)"
+awk -v s="$start" -v e="$end" '
+  $0==s {skip=1} !skip {print} $0==e {skip=0}
+' "$md" > "$tmp" && mv "$tmp" "$md"
+{
+  printf '%s\n' "$start"
+  printf '## devbrain (cross-project brain)\n\n'
+  printf 'Every prompt is captured to the private data repo at `~/devbrain-data`\n'
+  printf '(routing by git remote -> `projects/<project>/`). On resume or when the\n'
+  printf 'user asks "where was I" / "continue", run `/continue` to pull this project'\''s\n'
+  printf 'brain and refresh the live world. After meaningful progress, run `/distill`\n'
+  printf 'to curate new log into brain pages. Query the brain with `gbrain search`.\n'
+  printf '%s\n' "$end"
+} >> "$md"
+echo "  wrote devbrain block -> $md"
+
 echo "Done. Capture is live on your NEXT prompt; the flusher runs every 5 min."
+echo "Skills: /continue, /distill (restart Claude Code to load them)."
 echo "Logs: $logf   ·   Uninstall: $REPO/scripts/uninstall.sh"

@@ -25,6 +25,19 @@ if [ -f "$settings" ] && command -v jq >/dev/null; then
 fi
 
 # 3. Remove installed scripts.
-rm -f "$BIN/devbrain-capture.sh" "$BIN/devbrain-flush.sh" && echo "removed installed scripts"
+rm -f "$BIN/devbrain-capture.sh" "$BIN/devbrain-flush.sh" "$BIN/devbrain-rebuild.sh" && echo "removed installed scripts"
+
+# 4. Remove installed skills.
+rm -rf "$CLAUDE/skills/continue" "$CLAUDE/skills/distill" && echo "removed /continue and /distill skills"
+
+# 5. Strip the devbrain block from ~/.claude/CLAUDE.md.
+md="$CLAUDE/CLAUDE.md"
+if [ -f "$md" ]; then
+  tmp="$(mktemp)"
+  awk -v s="<!-- devbrain:start -->" -v e="<!-- devbrain:end -->" '
+    $0==s {skip=1} !skip {print} $0==e {skip=0}
+  ' "$md" > "$tmp" && mv "$tmp" "$md"
+  echo "removed devbrain block from $md"
+fi
 
 echo "Done. The data repo (~/devbrain-data) was left untouched."

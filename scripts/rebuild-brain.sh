@@ -11,14 +11,15 @@ command -v gbrain >/dev/null || { echo "gbrain not found on PATH"; exit 1; }
 [ -d "$DATA" ] || { echo "data repo not found at $DATA — clone TheWeiHu/devbrain-data there (or set \$DEVBRAIN_DATA)"; exit 1; }
 
 echo "Loading brain pages from $DATA ..."
-shopt -s nullglob globstar
-for f in "$DATA"/projects/**/brain/*.md; do
+# find (not bash globstar) — macOS ships bash 3.2, which lacks `shopt -s globstar`.
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
   slug="project/$(basename "$f" .md)"
   gbrain put "$slug" < "$f" >/dev/null
   gbrain tag "$slug" devbrain >/dev/null 2>&1 || true
   gbrain tag "$slug" architecture >/dev/null 2>&1 || true
   echo "  put $slug"
-done
+done < <(find "$DATA"/projects -type f -path '*/brain/*.md' 2>/dev/null)
 
 echo "Linking overview -> sections ..."
 for s in capture brain assemble concurrency-sync decisions; do
