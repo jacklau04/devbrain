@@ -27,12 +27,31 @@ ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
 
 # Pick the data home. Precedence: $DEVBRAIN_DATA > interactive prompt > default.
-# Non-interactive runs (CI, piped) silently take the default.
+# The prompt fires ONLY in a real terminal ([ -t 0 ]). Non-interactive runs —
+# Claude Code's Bash tool, `curl | bash`, CI — have no TTY, so they skip it and
+# take the default (~/devbrain-data). Set $DEVBRAIN_DATA to choose the path there.
 if [ -z "${DEVBRAIN_DATA:-}" ] && [ -t 0 ]; then
   printf 'Where should devbrain store prompts + brain? [%s]: ' "$DATA"
   read -r reply || reply=""
   [ -n "$reply" ] && DATA="${reply/#\~/$HOME}"
 fi
+
+# macOS TCC guard: LaunchAgents (the flusher) are denied access to ~/Desktop,
+# ~/Documents, ~/Downloads ("Operation not permitted"), which silently breaks
+# auto-sync. Steer the data home outside those.
+case "$DATA" in
+  "$HOME/Desktop/"*|"$HOME/Documents/"*|"$HOME/Downloads/"*)
+    warn "$DATA is under a macOS-protected folder (Desktop/Documents/Downloads) —"
+    warn "the launchd flusher is denied access there, silently breaking auto-sync."
+    if [ -t 0 ]; then
+      printf 'Use ~/devbrain-data instead? [Y/n]: '
+      read -r yn || yn=""
+      case "$yn" in [Nn]*) ;; *) DATA="$HOME/devbrain-data" ;; esac
+    else
+      warn "Set DEVBRAIN_DATA to a path outside those folders and re-run."
+    fi
+    ;;
+esac
 
 say "devbrain setup"
 echo "  repo: $REPO"
@@ -95,7 +114,6 @@ else
   git -C "$DATA" add -A
   git -C "$DATA" -c user.name=devbrain -c user.email=you@example.com commit -qm "init devbrain-data" || true
   ok "initialized fresh data repo at $DATA"
-  warn "add a private remote to sync across machines:  git -C $DATA remote add origin <url>"
 fi
 echo
 

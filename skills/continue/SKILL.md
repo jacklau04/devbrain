@@ -37,23 +37,48 @@ git -C "$DATA" pull --rebase --autostash --quiet 2>/dev/null || true
 ```
 
 ## Step 3 — Fold in new log (run the /distill protocol)
-**Run the `/distill` skill's protocol now** (Steps 2-4 of `~/.claude/skills/distill/SKILL.md`):
-find log entries newer than the last distill, distill them into topic pages, write
-them directly (no gate), and load gbrain. `/distill` is the single source of truth
-for *how* fold-in works — do not duplicate its logic here; follow it.
+**Run the `/distill` skill's protocol now** (Steps 2-5 of `~/.claude/skills/distill/SKILL.md`):
+find log entries newer than the ledger cursor, distill them into topic pages, write
+them directly (no gate), load gbrain, and advance the ledger. `/distill` is the
+single source of truth for *how* fold-in works — do not duplicate its logic here;
+follow it.
 
 `$DATA`, `$project`, `$LOGDIR`, `$BRAINDIR` are already resolved (Steps 1-2), so
 skip distill's Step 1 and start from its "read what's new" step. If there are no
 new log entries, say so and move on.
 
 ## Step 4 — Read this project's brain (hard-scoped)
-`gbrain search` is global (no tag filter), so scope to THIS project's own page
-slugs from the filesystem. Use search only to rank; keep in-scope hits.
+Ranking is global (no tag filter), so scope to THIS project's own page slugs from
+the filesystem. **Rank with `gbrain query`** (hybrid semantic — matches meaning,
+not just literal words, which is what resuming needs) **when an OpenAI key is set,
+otherwise fall back to keyword `gbrain search`.** Both print the same
+`[score] project/<slug> -- <title>` format, so the slug intersection is identical.
+
+> Why the key gate: `gbrain query` embeds your question via OpenAI, so it only
+> works where `OPENAI_API_KEY` is set. **Not every user/machine has one** — and
+> that's fine. Semantic search is an *enhancement*, not a requirement: keyword
+> `gbrain search` is pure tsvector, needs no key, works offline, and is the
+> baseline experience. So we check the key up front and skip straight to keyword
+> when it's absent (also fast — keyless `query` fails in ~0.3s, but skipping is
+> cleaner and self-documenting for installs). We additionally fall back if a
+> key *is* set but `query` still returns nothing (offline / no semantic hit) —
+> it prints the literal `"No results."`, so we test for `project/` lines, not
+> emptiness. Net: **best available ranking, never empty, never key-required.**
+
 ```bash
-# This project's slugs:
+# This project's in-scope slugs:
 for f in "$BRAINDIR"/*.md; do [ -e "$f" ] && echo "project/$(basename "$f" .md)"; done
-# Rank by relevance, then intersect with the slugs above:
-gbrain search "$project ${branch:-overview}" 2>/dev/null | head -20
+# Rank by relevance. Semantic if a key is configured; keyword otherwise.
+Q="${branch:-$project} — what is the state, recent decisions, and open items"
+ranked=""
+if [ -n "$OPENAI_API_KEY" ]; then
+  ranked="$(gbrain query "$Q" 2>/dev/null)"   # hybrid semantic (needs the key)
+fi
+# Fall back to keyword when there's no key, or query found no `project/<slug>` lines.
+# (search is AND across terms, so use "$project" alone — a branch slug like
+#  `owner/foo-v1` matches no page and would zero out the results.)
+printf '%s' "$ranked" | grep -q 'project/' || ranked="$(gbrain search "$project" 2>/dev/null)"
+printf '%s\n' "$ranked" | head -20
 ```
 Read the top 1-3 **in-scope** pages in full (`gbrain get "project/<slug>"`, or
 just read the markdown under `$BRAINDIR`). Ignore pages that belong to other
