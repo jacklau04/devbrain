@@ -36,38 +36,15 @@ Pull logs/pages other machines pushed.
 git -C "$DATA" pull --rebase --autostash --quiet 2>/dev/null || true
 ```
 
-## Step 3 — Fold in new log (auto-distill, no gate)
-This is the bundled `/distill`. Find log entries newer than the most recently
-updated brain page (the "since last distill" marker); if no pages exist yet, read
-the whole project log.
-```bash
-mkdir -p "$BRAINDIR"
-last="$(find "$BRAINDIR" -name '*.md' -type f -exec stat -f '%m' {} \; 2>/dev/null | sort -nr | head -1)"
-if [ -n "$last" ]; then
-  find "$LOGDIR" -name '*.md' -type f -newermt "@$last" 2>/dev/null
-else
-  find "$LOGDIR" -name '*.md' -type f 2>/dev/null
-fi
-```
-Read those files (sort entries by their in-file `## HH:MM:SS` timestamps). From
-the new log, extract **durable** knowledge — decisions, requirements, assumptions,
-gotchas — and group it **by topic**, not by session. For each topic:
-- **new page** `$BRAINDIR/<topic-slug>.md`, or **append** to an existing page
-  (read it first; never clobber).
+## Step 3 — Fold in new log (run the /distill protocol)
+**Run the `/distill` skill's protocol now** (Steps 2-4 of `~/.claude/skills/distill/SKILL.md`):
+find log entries newer than the last distill, distill them into topic pages, write
+them directly (no gate), and load gbrain. `/distill` is the single source of truth
+for *how* fold-in works — do not duplicate its logic here; follow it.
 
-Unlike standalone `/distill`, here you **write directly** (no approval gate) — the
-user reviews via `git diff` on the data repo. Then load into gbrain:
-```bash
-for f in "$BRAINDIR"/*.md; do
-  [ -e "$f" ] || continue
-  gbrain put "project/$(basename "$f" .md)" < "$f" >/dev/null 2>&1
-  gbrain tag "project/$(basename "$f" .md)" "$project" >/dev/null 2>&1 || true
-done
-gbrain embed --stale >/dev/null 2>&1 || true
-```
-**Skip this step** (say so) if there are no new log entries. **Do not** copy
-secrets (API keys, tokens) from the log into a brain page — note "redacted" and
-flag it.
+`$DATA`, `$project`, `$LOGDIR`, `$BRAINDIR` are already resolved (Steps 1-2), so
+skip distill's Step 1 and start from its "read what's new" step. If there are no
+new log entries, say so and move on.
 
 ## Step 4 — Read this project's brain (hard-scoped)
 `gbrain search` is global (no tag filter), so scope to THIS project's own page
