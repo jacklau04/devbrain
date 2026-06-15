@@ -11,7 +11,7 @@ raw log → brain (gbrain) → assembled context → `/continue`
 **Golden rule:** everything downstream of the raw log is a rebuildable projection.
 Never lose the log.
 
-## Where things stand (as of 2026-06-14)
+## Where things stand (as of 2026-06-15)
 
 **Architecture — two repos (split done 2026-06-14):**
 - `devbrain` (this, system) — design, scripts, and the to-build tooling. No personal data.
@@ -37,14 +37,21 @@ Never lose the log.
 - **Discovery wiring — done.** gbrain MCP + a marker-delimited block in
   `~/.claude/CLAUDE.md`. `scripts/install.sh` / `uninstall.sh` do it all idempotently.
 
+- **Install UX — gstack-style.** Root `./setup` (PR #2) wraps `scripts/install.sh`:
+  adds gbrain auto-install, an OpenAI-key prompt, and a data-path prompt (default
+  `~/devbrain-data`; this machine stays on `~/Desktop/devbrain-data`). `README.md`
+  rewritten gstack-style.
+
 ## Install on a new machine
 
 ```bash
-git clone git@github.com:TheWeiHu/devbrain.git ~/Desktop/devbrain   # system
-git clone git@github.com:TheWeiHu/devbrain-data.git ~/Desktop/devbrain-data # private data
-~/.claude/skills/setup-gbrain  # or: brew install bun && install gbrain CLI
-~/Desktop/devbrain/scripts/install.sh
+git clone --depth 1 https://github.com/TheWeiHu/devbrain.git ~/.claude/skills/devbrain \
+  && cd ~/.claude/skills/devbrain && ./setup
 ```
+
+`./setup` installs gbrain, prompts for the data home (default `~/devbrain-data`,
+creating or cloning it), then runs `scripts/install.sh`. Sync across machines by
+giving the data repo a private remote.
 
 ## Resolved (were open questions)
 

@@ -7,7 +7,7 @@
 # the files touched and tools used, extracted from the transcript. No model call,
 # never blocks, always exit 0 — this is enrichment, not the source-of-truth prompt.
 
-DATA="${DEVBRAIN_DATA:-$HOME/Desktop/devbrain-data}"
+DATA="${DEVBRAIN_DATA:-$HOME/devbrain-data}"
 
 payload="$(cat 2>/dev/null)" || exit 0
 command -v jq >/dev/null 2>&1 || exit 0

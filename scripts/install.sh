@@ -8,7 +8,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DATA="${DEVBRAIN_DATA:-$HOME/Desktop/devbrain-data}"
+DATA="${DEVBRAIN_DATA:-$HOME/devbrain-data}"
 DATA_DISPLAY="${DATA/#$HOME/~}"
 CLAUDE="$HOME/.claude"
 BIN="$CLAUDE/hooks"
