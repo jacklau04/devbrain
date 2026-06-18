@@ -1,22 +1,45 @@
 #!/usr/bin/env bash
-# devbrain release — cut a version in one command: bump VERSION, roll the CHANGELOG
-# [Unreleased] notes into a dated section, commit, and create the annotated vX.Y.Z tag.
+# devbrain — release cutter (MAINTAINER tool for the devbrain PROJECT itself, run
+# from a repo checkout — deliberately NOT installed as a `devbrain` subcommand).
+# Bumps VERSION, rolls the CHANGELOG [Unreleased] notes into a dated section,
+# commits, and creates the annotated vX.Y.Z tag.
 #
-#   devbrain release patch|minor|major   bump from the current VERSION
-#   devbrain release X.Y.Z                set an explicit version
-#   devbrain release <ver> --push         also push the commit + tag to origin
-#   devbrain release <ver> --dry-run      show what would change; touch nothing
+#   ./scripts/release.sh patch|minor|major   bump from the current VERSION
+#   ./scripts/release.sh X.Y.Z                set an explicit version
+#   ./scripts/release.sh <ver> --push         push commit + tag AND publish a GitHub Release
+#   ./scripts/release.sh <ver> --push --no-release   push, but skip the GitHub Release
+#   ./scripts/release.sh <ver> --dry-run      show what would change; touch nothing
 #
-# Run it on a clean `main` checkout (it operates on the repo at your CWD). Pre-1.0
-# rule of thumb: minor = new capability, patch = fixes/docs. The tag points at the
-# release commit it just made — exactly the "tag from main" cadence in CHANGELOG.
+# Run on a clean `main` checkout. Pre-1.0 rule: minor = new capability, patch =
+# fixes/docs. The tag points at the release commit; --push also runs `gh release
+# create` from the new CHANGELOG section (skips if gh is absent/unauthenticated).
 set -euo pipefail
 
-usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; }
 
-PUSH=0; DRY=0; BUMP=""
+# Print the body of the [<ver>] section of CHANGELOG.md (between its heading and the
+# next "## "). Used as the GitHub Release notes.
+changelog_section() {
+  awk -v ver="$1" 'BEGIN{ gsub(/\./,"\\.",ver); pat="^## \\[" ver "\\]" }
+    $0 ~ pat {f=1; next} f && /^## / {exit} f {print}' CHANGELOG.md
+}
+
+# Publish a GitHub Release for the new tag, best-effort: needs `gh`, auth, and a
+# GitHub remote. Skips gracefully (like every other optional-tool path) so a
+# release on a box without gh still succeeds — the tag is the real artifact.
+publish_release() {
+  command -v gh >/dev/null 2>&1 || { echo "release: 'gh' not found — GitHub Release skipped (create later: gh release create v$new)"; return 0; }
+  if changelog_section "$new" | gh release create "v$new" --title "devbrain v$new" --notes-file - --verify-tag >/dev/null 2>&1; then
+    echo "release: published GitHub Release v$new"
+  else
+    echo "release: GitHub Release skipped (gh not authenticated / no GitHub remote) — create later:  gh release create v$new --notes-file -"
+  fi
+}
+
+PUSH=0; DRY=0; NO_REL=0; BUMP=""
 while [ $# -gt 0 ]; do case "$1" in
   --push)        PUSH=1; shift;;
+  --no-release)  NO_REL=1; shift;;
   --dry-run|-n)  DRY=1; shift;;
   -h|--help)     usage; exit 0;;
   major|minor|patch)        BUMP="$1"; shift;;
@@ -108,8 +131,10 @@ echo "release: committed + tagged v$new"
 
 if [ "$PUSH" = 1 ]; then
   br="$(git rev-parse --abbrev-ref HEAD)"
-  git push origin "$br" && git push origin "v$new"
+  git push origin "$br"
+  git push origin "v$new"
   echo "release: pushed $br + v$new"
+  [ "$NO_REL" = 1 ] && echo "release: --no-release → GitHub Release skipped" || publish_release
 else
   echo "release: not pushed. To publish:  git push origin HEAD && git push origin v$new"
 fi

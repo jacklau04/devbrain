@@ -16,27 +16,32 @@ file at the repo root. See [Releasing](#releasing) for how a version is cut.
   with live brain-page/open-task counts. A reminder, not a query: never runs
   gbrain itself (no latency/cost/stale injection); real hosted projects only;
   silent when there's no brain to consult; fail-open. On by default.
-- **Unified `devbrain` command** — one dispatcher with subcommands (`todo`,
-  `import`, `rebuild`, `flush`, `nightshift`, `release`, `version`, `help`)
-  instead of separate scripts. Legacy names (`devbrain-todo`, `devbrain-import`,
-  `nightshift`) keep working as back-compat aliases.
-- **`devbrain release`** — one-command version cut: bump `VERSION`, roll these
-  `[Unreleased]` notes into a dated section, commit, and create the `vX.Y.Z` tag
-  (`--push` to publish, `--dry-run` to preview).
-
-### Changed
-- **De-personalized for open-source install.** The data-repo-missing message no
-  longer points at a private repo (guides you to create your own / set
-  `DEVBRAIN_DATA_REMOTE`); flusher commit identity defaults to an impersonal
-  `devbrain@localhost` and honors `DEVBRAIN_GIT_NAME` / `DEVBRAIN_GIT_EMAIL`.
+- `scripts/release.sh --push` now also publishes a **GitHub Release**
+  (`gh release create`) from the new CHANGELOG section, so a release is one
+  command end-to-end; `--no-release` opts out (tag only).
+- The release cutter is the maintainer script `scripts/release.sh` (run from a
+  checkout) — no longer installed as a `devbrain release` subcommand, since it
+  releases the devbrain *project*, not anything an installed user would run.
 
 ## [0.1.0] — 2026-06-18
 
 First versioned release. Establishes devbrain's two-stage design — raw capture
 (Stage A) feeding a curated, queryable brain (Stage B) — and the install/skill
-machinery around it. Everything below predates this tag; it is the baseline.
+machinery around it.
 
 ### Added
+- **Unified `devbrain` command** — one dispatcher with subcommands (`todo`,
+  `import`, `rebuild`, `flush`, `nightshift`, `release`, `version`, `help`);
+  legacy names (`devbrain-todo`, `devbrain-import`, `nightshift`) keep working as
+  back-compat aliases.
+- **Release tooling** — `scripts/release.sh` cuts a version in one command: bump
+  `VERSION`, roll the `[Unreleased]` notes into a dated section, commit, tag `vX.Y.Z`.
+- **Versioning** — a `VERSION` file (semver source of truth) + this CHANGELOG;
+  `./setup --version` and `devbrain version`.
+- **Open-source-ready install** — no hardcoded personal defaults: data-repo
+  remote configurable via `DEVBRAIN_DATA_REMOTE`, commit identity from your git
+  config or `DEVBRAIN_GIT_NAME` / `DEVBRAIN_GIT_EMAIL` (impersonal
+  `devbrain@localhost` fallback).
 - **Prompt + response capture.** `UserPromptSubmit` → `capture.sh` logs every
   prompt; `Stop` → `capture-response.sh` logs a head/middle/tail-sampled recap of
   the model's final message plus a `touched:`/`tools:` trace. Append-only Markdown
@@ -75,23 +80,33 @@ machinery around it. Everything below predates this tag; it is the baseline.
 
 ## Releasing
 
-devbrain is tagged from `main`, on no fixed calendar — a version is cut when a
-coherent batch of changes has landed and is worth marking. Pre-1.0, the bump
-rule is: **minor** (`0.X.0`) for new capabilities, **patch** (`0.0.X`) for
-fixes and docs only.
+devbrain is tagged from `main`, on **no fixed calendar and not per-merge** (that's
+too noisy) — a version is cut on judgment when a coherent batch has landed and is
+worth marking. Reasonable triggers:
 
-To cut a release, run the helper on a clean `main` checkout — it does all three
-steps (roll the `[Unreleased]` notes into a dated `[X.Y.Z]` section, bump
-[`VERSION`](VERSION), commit, and create the annotated `vX.Y.Z` tag):
+- a user-facing capability lands (new subcommand, skill, hook) → **minor** (`0.X.0`)
+- a batch of fixes/docs accumulates → **patch** (`0.0.X`)
+- before you share the repo, onboard someone, or announce — so they install a
+  known-good tag, not a moving `main`
+- after a change to install / hooks / data layout — so users can pin or roll back
+- **`1.0.0`** once the install contract + data layout are stable enough to promise
+  backward-compatibility
+
+To cut one, run the maintainer script on a clean `main` checkout — it rolls the
+`[Unreleased]` notes into a dated `[X.Y.Z]` section, bumps [`VERSION`](VERSION),
+commits, and creates the annotated `vX.Y.Z` tag:
 
 ```sh
-devbrain release minor          # or: patch · major · an explicit X.Y.Z
-devbrain release minor --push   # also push the commit + tag to origin
-devbrain release minor -n       # dry-run: show the diff, change nothing
+./scripts/release.sh minor          # or: patch · major · an explicit X.Y.Z
+./scripts/release.sh minor --push   # push commit + tag AND publish a GitHub Release
+./scripts/release.sh minor -n       # dry-run: show the diff, change nothing
 ```
 
-Without `--push` it stops after the local commit + tag and prints the
-`git push origin HEAD && git push origin vX.Y.Z` to publish when you're ready.
+(`scripts/release.sh` releases the devbrain *project* — it's a repo-checkout tool,
+not an installed `devbrain` subcommand.) Without `--push` it stops after the local
+commit + tag and prints the push command.
+With `--push` it also runs `gh release create` from the new CHANGELOG section
+(`--no-release` skips that); both skip gracefully if `gh` is unavailable.
 
 `VERSION` is the machine-readable source of truth; the git tag (`vX.Y.Z`) is the
 immutable marker. Keep them in lockstep.
