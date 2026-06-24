@@ -9,6 +9,10 @@ file at the repo root. See [Releasing](#releasing) for how a version is cut.
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.4.1] — 2026-06-24
+
 ### Added
 - **`devbrain uninstall`** — uninstall is now a first-class subcommand, symmetric with the
   rest of the CLI (you install via `npx getdevbrain install`, but everything after is
@@ -275,7 +279,8 @@ With `--push` it also runs `gh release create` from the new CHANGELOG section
 `VERSION` is the machine-readable source of truth; the git tag (`vX.Y.Z`) is the
 immutable marker. Keep them in lockstep.
 
-[Unreleased]: https://github.com/TheWeiHu/devbrain/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/TheWeiHu/devbrain/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/TheWeiHu/devbrain/releases/tag/v0.4.1
 [0.4.0]: https://github.com/TheWeiHu/devbrain/releases/tag/v0.4.0
 [0.3.0]: https://github.com/TheWeiHu/devbrain/releases/tag/v0.3.0
 [0.2.0]: https://github.com/TheWeiHu/devbrain/releases/tag/v0.2.0
