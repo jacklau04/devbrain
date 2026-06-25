@@ -240,7 +240,10 @@ hl_step() {  # $1 index — one poll step for a headless worker
     fi
     br="$(git -C "${WT[$i]}" branch --show-current 2>/dev/null)"
     case "$br" in
-      todo/*) if merge_to_nightshift "$br" "${br#todo/}"; then NOMERGE=0; else NOMERGE=$((NOMERGE + 1)); fi;;
+      # rc 0 = new merge, rc 2 = already landed (worker-direct or prior merge) — BOTH are
+      # progress; only rc 1 (conflict/fail) is a no-merge. Counting rc 2 as no-progress would
+      # stall the fleet after STALL_K direct landings.
+      todo/*) merge_to_nightshift "$br" "${br#todo/}"; case $? in 0|2) NOMERGE=0;; *) NOMERGE=$((NOMERGE + 1));; esac;;
       *)      NOMERGE=$((NOMERGE + 1));;   # planning / no-branch turn → no merge
     esac
     return   # harvested this poll; assign the next turn on the following poll
@@ -485,13 +488,19 @@ drop_spent_branch() {  # $1 branch (todo/<id>)
 # Returns: 0 NEW merge · 2 already-in-nightshift (no-op) · 1 conflict/fail/not-pushed.
 merge_to_nightshift() {  # $1 branch (todo/<id>) ; $2 task id
   local br="$1" id="$2" verdict
-  git -C "$BASE" ls-remote --exit-code --heads origin "$br" >/dev/null 2>&1 || { echo "orch:   $br not pushed — requeue"; requeue "$id" "worker turn produced no pushed branch"; return 1; }
   git -C "$BASE" fetch -q origin
-  # Already in nightshift (e.g. a stale branch from a no-op turn) → ensure done, never
-  # re-merge. This kills the re-merge churn (was 60×) AND makes reconcile cheap.
-  if git -C "$BASE" merge-base --is-ancestor "origin/$br" origin/nightshift 2>/dev/null; then
-    ( cd "$BASE" && "$TODO" done "$id" 2>/dev/null ); drop_spent_branch "$br"; return 2
+  # A worker can LAND a failed-merge fix itself: resolve the conflict / fix the gate, merge its
+  # branch into origin/nightshift, push, and signal with `devbrain-todo done`. Detect that FIRST
+  # — before the not-pushed requeue, so a worker that pruned its branch after a clean direct
+  # merge isn't bounced back to open — then confirm the close and never re-merge. branch-is-
+  # ancestor is the verified truth; a worker-set `done` is the explicit signal (nightshift is
+  # disposable + human-reviewed before main, so trusting it matches the risk posture). Also
+  # covers a stale branch already in nightshift from a no-op turn (killed 60× re-merge churn).
+  if git -C "$BASE" merge-base --is-ancestor "origin/$br" origin/nightshift 2>/dev/null \
+     || [ "$(task_status "$id")" = done ]; then
+    ( cd "$BASE" && "$TODO" done "$id" 2>/dev/null ); drop_spent_branch "$br"; echo "orch: ✓ $id landed (worker-direct or prior merge) — confirmed, not re-merging"; return 2
   fi
+  git -C "$BASE" ls-remote --exit-code --heads origin "$br" >/dev/null 2>&1 || { echo "orch:   $br not pushed — requeue"; requeue "$id" "worker turn produced no pushed branch"; return 1; }
   git -C "$STAGE_WT" checkout -q nightshift 2>/dev/null; git -C "$STAGE_WT" reset -q --hard origin/nightshift
   if ! git -C "$STAGE_WT" merge --no-ff -q -m "nightshift: merge $br into nightshift" "origin/$br" >/dev/null 2>&1; then
     local cf; cf="$(git -C "$STAGE_WT" diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')"
@@ -663,7 +672,8 @@ while :; do
       # gate + merge the work this turn produced; track stall (no NEW merge).
       br="$(git -C "${WT[$i]}" branch --show-current 2>/dev/null)"
       case "$br" in
-        todo/*) if merge_to_nightshift "$br" "${br#todo/}"; then NOMERGE=0; else NOMERGE=$((NOMERGE + 1)); fi;;
+        # rc 0/2 both progress (new merge / already landed); only rc 1 is a no-merge — see hl_step.
+        todo/*) merge_to_nightshift "$br" "${br#todo/}"; case $? in 0|2) NOMERGE=0;; *) NOMERGE=$((NOMERGE + 1));; esac;;
         *)      NOMERGE=$((NOMERGE + 1));;   # planning / no-branch turn → no merge
       esac
     fi
