@@ -563,6 +563,7 @@ class Handler(BaseHTTPRequestHandler):
     q = None
     dashboard = None
     port = 8799   # the port we actually bound — passed to a dashboard-launched nightshift run
+                  # (default rationale documented at the --port arg in main())
 
     def log_message(self, format, *args): pass
 
@@ -677,6 +678,8 @@ def select_port(start, tries, try_bind, is_reusable):
 
 def main():
     ap = argparse.ArgumentParser(prog="devbrain queue", description="localhost TODO-queue kanban")
+    # 8799: uncommon local-HTTP port, off the crowded dev clusters; select_port()
+    # walks 8799->8818 on collision (see select_port / is_devbrain_queue).
     ap.add_argument("--port", type=int, default=8799)
     ap.add_argument("--no-open", action="store_true")
     ap.add_argument("--data", default=os.environ.get("DEVBRAIN_DATA", os.path.expanduser("~/devbrain-data")))
