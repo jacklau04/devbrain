@@ -365,19 +365,34 @@ release_branch_task() {  # $1 index — restore as if this worker's turn never r
 # original behavior; `devbrain nightshift stop` reaps them), and any stranded tmux claim is freed
 # by the stale-claim lease on restart — so cleanup doesn't touch tmux.
 CLEANED=0
+# A SIGKILLed worker (timeout/hang) never runs its Stop hook, so its turn's tokens never
+# reach the sidecar. import.py re-derives them from the transcripts (idempotent, path-routes
+# dead worktrees), recovering the spend without double-counting the live rows.
+backfill_token_cost() {
+  local imp="$HOME/.claude/hooks/devbrain-import"   # installed copy; repo checkout falls back
+  [ -x "$imp" ] || imp="$SELF_DIR/import.py"
+  [ -x "$imp" ] || return 0
+  local data="${DEVBRAIN_DATA:-$HOME/devbrain-data}"   # same resolution as the capture hooks
+  "$imp" --data "$data" --apply --tokens-only >/dev/null 2>&1 \
+    && echo "orch: backfilled token cost for killed/un-stopped worker turns"
+  return 0   # best-effort: never abort teardown
+}
+
 cleanup() {
   trap - EXIT INT TERM; [ "$CLEANED" = 1 ] && return; CLEANED=1
   [ "$FIXED_SET" = 1 ] && fixedset_unfence   # un-park the out-of-set tasks we fenced at boot (both backends)
-  [ "$MODE" = headless ] || return 0
-  echo "orch: shutting down — reaping in-flight turns + releasing their claimed tasks"
-  local i p
-  for i in $(seq 0 $((N - 1))); do
-    p="${WTPID[$i]:-}"; { [ -n "$p" ] && kill -0 "$p" 2>/dev/null; } || continue
-    pkill -P "$p" 2>/dev/null; kill "$p" 2>/dev/null   # timeout forwards TERM to claude; -P sweeps any straggler
-    wait "$p" 2>/dev/null                              # let the turn's git fully exit before we touch its worktree
-    release_branch_task "$i"                            # kill + reap FIRST, then wipe — no race on a still-writing turn
-    rm -f "${WT[$i]}/.nightshift/turn.pid" 2>/dev/null
-  done
+  if [ "$MODE" = headless ]; then
+    echo "orch: shutting down — reaping in-flight turns + releasing their claimed tasks"
+    local i p
+    for i in $(seq 0 $((N - 1))); do
+      p="${WTPID[$i]:-}"; { [ -n "$p" ] && kill -0 "$p" 2>/dev/null; } || continue
+      pkill -P "$p" 2>/dev/null; kill "$p" 2>/dev/null   # timeout forwards TERM to claude; -P sweeps any straggler
+      wait "$p" 2>/dev/null                              # let the turn's git fully exit before we touch its worktree
+      release_branch_task "$i"                            # kill + reap FIRST, then wipe — no race on a still-writing turn
+      rm -f "${WT[$i]}/.nightshift/turn.pid" 2>/dev/null
+    done
+  fi
+  backfill_token_cost   # both backends: recover killed-turn cost (headless timeouts + tmux hang-kills)
 }
 
 # Ensure the turn-marker Stop hook is installed globally (guarded by NIGHTSHIFT_MARKER,
