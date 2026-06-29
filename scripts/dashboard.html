@@ -1527,9 +1527,6 @@ function renderPanel(){
         s.style.color=t>0.6?'var(--text)':t>0.28?'var(--accent)':'var(--muted)';
         s.title=`${c} prompts — click to read them`; s.onclick=()=>selectWord(w); cloud.appendChild(s);});
       box.appendChild(cloud);
-      const h=document.createElement('div'); h.className='hint';
-      h.textContent='Most-used words across your prompts. Click a word — or any chart element — to read the source prompts.';
-      box.appendChild(h);
     } else {
       box.innerHTML='<div class="hint">No prose words in this view — switch kind or widen the date range.</div>';
     }
