@@ -96,6 +96,28 @@ file at the repo root. See [Releasing](#releasing) for how a version is cut.
 - **Queue dashboard project picker** now fences its three zones with native `<optgroup>`
   headers instead of full-height dash-separator rows, removing the dead vertical space
   that made the open dropdown look empty above "miscellaneous".
+- **The Profile "Skills Called" charts now count the skills you actually ran, not just the
+  ones you typed first.** A skill call was scored only when the prompt's first token was a
+  slash-command, so a skill the model invoked on its own — "ok, distill?" runs `/distill`
+  with no leading slash — counted as zero. The count now comes from each turn's `tools:`
+  response meta, which records the real `Skill` tool-uses. To name them, `capture-response.sh`
+  now writes the invoked skill into that meta (`Skill:distill×1`) instead of a nameless
+  `Skill×N` — the only record of *which* skill an autonomous call ran. Older logs that saved
+  only a bare `Skill×N` are unrecoverable, so an autonomous call with no leading slash to
+  attribute it to is dropped rather than pooled under a meaningless "(autonomous)" chip;
+  going forward every invocation is named and counted under its real skill.
+- **Profile right column** now leads with the Prompts panel and puts Global Preferences
+  below it.
+
+### Added
+- **`backfill-skill-names.py` recovers skill names already in your logs.** Turns captured
+  before the rename above hold a nameless `Skill×N` in their `tools:` meta, so an autonomous
+  call (no leading slash) was invisible on the Skills charts. The name isn't lost — the
+  original Claude Code transcript on disk still has the `Skill` tool-use with its `input.skill`.
+  This pass re-reads the transcripts and rewrites each bare `Skill×N` into the named
+  `Skill:<name>×k` form (order-matched per session, meta-line only so quoted prose is never
+  touched, idempotent). Calls whose transcript was pruned stay bare and are reported, never
+  guessed. `import.py` names skills the same way when it re-derives a backfilled session.
 
 ### Removed
 - **"How Terse, By Day" Profile chart** — retired.
