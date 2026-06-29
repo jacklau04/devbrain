@@ -346,6 +346,9 @@ run_headless_turn() {  # $1 index ; $2 prompt — launch one claude -p turn in t
   git -C "$wt" reset -q --hard origin/nightshift 2>/dev/null
   git -C "$wt" clean -qfd 2>/dev/null
   case "$prev" in todo/*) git -C "$wt" branch -qD "$prev" 2>/dev/null;; esac
+  # Fork-base SHA, so the harvest can tell a real turn from an EMPTY one (branch == fork base,
+  # which is an ancestor of the advanced nightshift → false "already landed → done", the 0085 bug).
+  TURN_BASE[$i]="$(git -C "$wt" rev-parse HEAD 2>/dev/null)"
   : > "$log"
   # The rules go in --append-system-prompt as a real argument (not typed into a
   # TUI), so quotes/newlines in them can't break anything — the whole reason the
@@ -359,6 +362,13 @@ run_headless_turn() {  # $1 index ; $2 prompt — launch one claude -p turn in t
   # this process's WTPID array) can reap the detached child even after a hard orchestrator
   # kill. Removed when the turn is harvested in hl_step.
   echo "$!" > "$wt/.nightshift/turn.pid" 2>/dev/null
+}
+# True only if the worktree branch is AHEAD of the origin/nightshift it forked from — i.e. the
+# turn committed something. An empty turn equals its fork base, which merge_to_nightshift would
+# mis-read as already-landed (0085 bug).
+turn_made_commits() {  # $1 worktree ; $2 fork-base SHA
+  [ -n "$2" ] || return 0   # no recorded base → can't prove it's empty; let the merge path decide
+  [ "$(git -C "$1" rev-list --count "$2..HEAD" 2>/dev/null || echo 0)" -gt 0 ]
 }
 hl_step() {  # $1 index — one poll step for a headless worker
   local i="$1" rc br
@@ -378,10 +388,19 @@ hl_step() {  # $1 index — one poll step for a headless worker
     fi
     br="$(git -C "${WT[$i]}" branch --show-current 2>/dev/null)"
     case "$br" in
-      # rc 0 = new merge, rc 2 = already landed (worker-direct or prior merge) — BOTH are
-      # progress; only rc 1 (conflict/fail) is a no-merge. Counting rc 2 as no-progress would
-      # stall the fleet after STALL_K direct landings.
-      todo/*) merge_to_nightshift "$br" "${br#todo/}"; case $? in 0|2) NOMERGE=0;; *) NOMERGE=$((NOMERGE + 1));; esac;;
+      todo/*)
+        # Empty turn → release the claim instead of merging (a no-commit branch would be
+        # mis-marked done); the task returns to `open` and gets really done next time.
+        if ! turn_made_commits "${WT[$i]}" "${TURN_BASE[$i]:-}"; then
+          echo "orch: worker $i produced no commit for ${br#todo/} — releasing (empty turn, not marking done)"
+          release_branch_task "$i"; NOMERGE=$((NOMERGE + 1))
+        else
+          # rc 0 = new merge, rc 2 = already landed (worker-direct or prior merge) — BOTH are
+          # progress; only rc 1 (conflict/fail) is a no-merge. Counting rc 2 as no-progress would
+          # stall the fleet after STALL_K direct landings.
+          merge_to_nightshift "$br" "${br#todo/}"; case $? in 0|2) NOMERGE=0;; *) NOMERGE=$((NOMERGE + 1));; esac
+        fi
+        ;;
       *)      NOMERGE=$((NOMERGE + 1));;   # planning / no-branch turn → no merge
     esac
     return   # harvested this poll; assign the next turn on the following poll
@@ -389,14 +408,16 @@ hl_step() {  # $1 index — one poll step for a headless worker
   # idle → decide the next turn (SAME policy as the tmux backend)
   if [ "$STALLED" = 1 ] || [ "$NOMERGE" -ge "$STALL_K" ]; then STATE[$i]="parked"; return; fi
   [ "$BASE_RED" = 1 ] && [ "$BR_ASSIGNED" -ge 1 ] && { STATE[$i]="parked"; return; }   # red base → feed one fixer only
-  if [ "$oc" -gt 0 ]; then
+  # ONE worker per open task: BR_ASSIGNED counts assignments made this poll, so cap at `oc` —
+  # else every idle worker piles onto the lone open task in wind-down (the fan-out bug).
+  if [ "$BR_ASSIGNED" -lt "$oc" ]; then
     run_headless_turn "$i" "/continue"; STATE[$i]="working"; BR_ASSIGNED=$((BR_ASSIGNED + 1))
     echo "orch: worker $i started /continue (open=$oc)"
-  elif [ "$FIXED_SET" != 1 ] && [ $((now - PLANNED_LAST)) -gt "$REPLAN" ]; then
+  elif [ "$oc" -eq 0 ] && [ "$FIXED_SET" != 1 ] && [ $((now - PLANNED_LAST)) -gt "$REPLAN" ]; then
     echo "orch: queue empty — worker $i planning (replenish)"
     run_headless_turn "$i" "$PLAN_RULES"; STATE[$i]="working"; PLANNED_LAST=$now
   else
-    STATE[$i]="parked"   # fixed-set or recently planned → stay quiet (wind-down handled in main loop)
+    STATE[$i]="parked"   # capped, fixed-set, or recently planned → stay quiet (wind-down handled in main loop)
   fi
 }
 
@@ -450,13 +471,27 @@ cleanup() {
   [ "$FIXED_SET" = 1 ] && fixedset_unfence   # un-park the out-of-set tasks we fenced at boot (both backends)
   if [ "$MODE" = headless ]; then
     echo "orch: shutting down — reaping in-flight turns + releasing their claimed tasks"
-    local i p
+    local i p id
     for i in $(seq 0 $((N - 1))); do
-      p="${WTPID[$i]:-}"; { [ -n "$p" ] && kill -0 "$p" 2>/dev/null; } || continue
-      pkill -P "$p" 2>/dev/null; kill "$p" 2>/dev/null   # timeout forwards TERM to claude; -P sweeps any straggler
-      wait "$p" 2>/dev/null                              # let the turn's git fully exit before we touch its worktree
-      release_branch_task "$i"                            # kill + reap FIRST, then wipe — no race on a still-writing turn
-      rm -f "${WT[$i]}/.nightshift/turn.pid" 2>/dev/null
+      p="${WTPID[$i]:-}"
+      # Only workers with an UNHARVESTED in-flight turn (WTPID still set). A harvested worktree can
+      # sit on a HELD task's todo/ branch (merge hit the retry cap → requeue → held); wiping it would
+      # release the task and defeat the hold. WTPID stays set until hl_step harvests, so a turn an
+      # external `nightshift stop` already reaped is still covered here even though its child is dead.
+      [ -n "$p" ] || continue
+      if kill -0 "$p" 2>/dev/null; then
+        pkill -P "$p" 2>/dev/null; kill "$p" 2>/dev/null   # timeout forwards TERM to claude; -P sweeps any straggler
+        wait "$p" 2>/dev/null                              # let the turn's git fully exit before we touch its worktree
+      fi
+      # Release even if the child already died: a separate stop may have reaped it via turn.pid first,
+      # and the old `kill -0 || continue` then stranded the in-flight task `taken`.
+      release_branch_task "$i"
+      rm -f "${WT[$i]:-/nonexistent}/.nightshift/turn.pid" 2>/dev/null
+    done
+    # Backstop: return every still-`taken` task in scope to `open` (covers a claim made before the
+    # worktree was on its todo/ branch). DEVBRAIN_TODO_ONLY scopes it; `release` skips `done` tasks.
+    for id in $( ( cd "$BASE" && "$TODO" list taken 2>/dev/null ) | grep -oE '[0-9]{4}-[a-z0-9-]+' ); do
+      ( cd "$BASE" && "$TODO" release "$id" 2>/dev/null ) && echo "orch: released stranded claim $id (taken → open on shutdown)"
     done
   fi
   backfill_token_cost   # both backends: recover killed-turn cost (headless timeouts + tmux hang-kills)
@@ -854,7 +889,7 @@ warn_ci_scope           # warn if any workflow would fire CI on per-task -> nigh
 # guarantees "--only", not the env var alone (which fails open against a stale todo.sh).
 fixedset_unfence
 [ "$FIXED_SET" = 1 ] && fixedset_fence
-declare -a WT SESS MARKER BASE_CNT LASTHASH LASTCHG STATE PROMPT_SENT WTLOG WTPID
+declare -a WT SESS MARKER BASE_CNT LASTHASH LASTCHG STATE PROMPT_SENT WTLOG WTPID TURN_BASE
 # Reap in-flight turns + release their tasks on any exit. INT/TERM must EXIT after
 # cleanup — returning from the handler would just resume the main loop (so `nightshift
 # stop`'s SIGTERM would reap turns but leave the orchestrator running). cleanup is
@@ -957,12 +992,13 @@ while :; do
       fi
       # while the base is red, feed only ONE worker per cycle (the priority-99 fix) — no churn
       [ "$BASE_RED" = 1 ] && [ "$BR_ASSIGNED" -ge 1 ] && { STATE[$i]="parked"; continue; }
-      # needs an assignment
-      if [ "$oc" -gt 0 ]; then
+      # needs an assignment — but cap at ONE worker per open task (BR_ASSIGNED counts assignments
+      # made this poll), so idle workers don't all pile onto the same lone task in the wind-down.
+      if [ "$BR_ASSIGNED" -lt "$oc" ]; then
         send_prompt "$s" "/continue"; PROMPT_SENT[$i]="/continue"
         STATE[$i]="assigned"; BASE_CNT[$i]="$cur"; LASTCHG[$i]=$now; BR_ASSIGNED=$((BR_ASSIGNED + 1))
         echo "orch: worker $i assigned /continue (open=$oc)"
-      elif [ "$FIXED_SET" != 1 ] && [ $((now - PLANNED_LAST)) -gt "$REPLAN" ]; then
+      elif [ "$oc" -eq 0 ] && [ "$FIXED_SET" != 1 ] && [ $((now - PLANNED_LAST)) -gt "$REPLAN" ]; then
         # queue empty → generate more work so the fleet never starves (forever mode)
         echo "orch: queue empty — worker $i planning (replenish)"
         send_prompt "$s" "$PLAN_RULES"; PROMPT_SENT[$i]="$PLAN_RULES"
