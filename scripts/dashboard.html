@@ -1140,12 +1140,12 @@ function chGbrain(){
 // Token Cost card — two lollipop panels over the date window: $ spend by project (the
 // "where is the money going" view) and token share by model (the mix that drives cost).
 // Reads the tokens.jsonl sidecar via /api/tokens; cost is true spend incl. cache (priced
-// by PRICE above). Independent of the prompt KIND/typed-bot toggle — usage is usage.
+// by PRICE above). Honors the typed/bot/all toggle via tokVisible (r.auto): typed = your
+// interactive spend, bot = the nightshift fleet's, all = both.
 const usd=v=>v>=100?'$'+Math.round(v):v>=10?'$'+v.toFixed(1):'$'+v.toFixed(2);
 function chCost(){
   const from=$('pf-from').value, to=$('pf-to').value;
-  // Spend is independent of the prompt typed/bot toggle; that filter controls prompt charts.
-  const t=TOK.filter(r=>(!from||r.date>=from)&&(!to||r.date<=to)&&tokBillable(r));
+  const t=TOK.filter(r=>(!from||r.date>=from)&&(!to||r.date<=to)&&tokVisible(r));
   const cs=$('pf-s-cost'), ms=$('pf-s-model');
   if(!t.length){ [cs,ms].forEach(s=>{s.innerHTML='';s.setAttribute('viewBox','0 0 520 40');s.appendChild(txt(8,24,'no token data in this window — logged from new turns + import.py backfill',{'font-size':11,fill:'var(--muted)'}));}); $('pf-c-cost').textContent=''; $('pf-c-costm').textContent=''; return; }
   // Break spend down by kind: output is the driver; cache_read is huge in volume but
@@ -1208,7 +1208,7 @@ function chGbHit(){
 // grain than the window total. <synthetic> excluded (non-API).
 function chCostTime(){
   const from=$('pf-from').value, to=$('pf-to').value;
-  const recs=TOK.filter(r=>(!from||r.date>=from)&&(!to||r.date<=to)&&tokBillable(r));
+  const recs=TOK.filter(r=>(!from||r.date>=from)&&(!to||r.date<=to)&&tokVisible(r));
   const heatSvg=$('pf-s-costtime'); $('pf-s-costday').innerHTML='';
   if(!recs.length){ heatSvg.removeAttribute('width');heatSvg.removeAttribute('height');heatSvg.innerHTML=''; heatSvg.setAttribute('viewBox','0 0 1080 40'); heatSvg.appendChild(txt(8,24,'no token data in this window',{'font-size':11,fill:'var(--muted)'})); $('pf-c-costtime').textContent=''; return; }
 
