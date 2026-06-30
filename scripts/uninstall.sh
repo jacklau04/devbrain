@@ -7,6 +7,7 @@ CLAUDE="$HOME/.claude"
 BIN="$CLAUDE/hooks"
 CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
 CODEX_BIN="$CODEX_DIR/hooks"
+CODEX_SKILLS="$HOME/.agents/skills"
 settings="$CLAUDE/settings.json"
 codex_settings="$CODEX_DIR/hooks.json"
 plist="$HOME/Library/LaunchAgents/com.devbrain.flush.plist"
@@ -89,8 +90,10 @@ if [ -f "$gate_repo_file" ]; then
 fi
 
 # 4. Remove installed skills.
-rm -rf "$CLAUDE/skills/continue" "$CLAUDE/skills/distill" \
+rm -rf "$CLAUDE/skills/continue" "$CLAUDE/skills/distill" "$CLAUDE/skills/work" \
        "$CLAUDE/skills/nightshift" "$CLAUDE/skills/reconcile" && echo "removed devbrain skills"
+rm -rf "$CODEX_SKILLS/continue" "$CODEX_SKILLS/distill" "$CODEX_SKILLS/work" \
+       "$CODEX_SKILLS/nightshift" "$CODEX_SKILLS/reconcile" && echo "removed Codex devbrain skills"
 
 # 5. Strip the devbrain block from ~/.claude/CLAUDE.md.
 md="$CLAUDE/CLAUDE.md"
