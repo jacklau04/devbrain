@@ -10,12 +10,17 @@ file at the repo root. See [Releasing](#releasing) for how a version is cut.
 ## [Unreleased]
 
 ### Added
-- **Cache-read cost is now visible per session in the dashboard.** A new *Cache-Read Cost ·
-  By Session* panel in the Profile card's Cost view ranks sessions by their `cache_read`
-  spend, labelling each bar with its turn count (`project ·Nt`). `cache_read` is ~99% of
-  token volume but cheap (~0.1× input), so it hides in the totals; a micro-turn loop that
-  re-reads a big cached prefix every turn now stands out as a tall bar with a high turn
-  count. The `/api/tokens` records carry a `session` field for the grouping.
+- **Cache-read cost is visible in the dashboard, two ways.** The Profile card's Cost view gains
+  *Cache-Read Share · Over Time* — a 100%-normalized area chart of `cache_read` as a share of each
+  day's total spend (absolute daily magnitude already lives in the Cost Over Time panel above) —
+  and *Cache-Read $ / Turn · By Session*, a scatter (x = turns, y = cache-read $/turn, one dot per
+  session of ≥5 turns, colored by project) where a session re-reading a big cached prefix every
+  turn sits top-right — high per-turn cost regardless of length, the signal total cache-read $
+  couldn't flag. A shaded danger corner + an "efficient" hint make the axes self-reading. Clicking
+  a dot opens that session's turns in the right-hand panel — each prompt with its one-line response
+  recap — so a dot in the danger corner is explainable. `cache_read` is ~99% of token volume but
+  cheap (~0.1× input). The `/api/tokens` records carry a `session` field for the grouping, and
+  `/api/prompts` records now carry the per-turn `r` (recap), shown on every prompt card.
 
 ### Changed
 - **Codex skill calls now count on the dashboard.** A Codex skill run (`$distill`, `$continue`,
