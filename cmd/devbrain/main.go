@@ -11,9 +11,13 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/TheWeiHu/devbrain/internal/gbrainlog"
+	"github.com/TheWeiHu/devbrain/internal/hookev"
+	"github.com/TheWeiHu/devbrain/internal/hooks"
 	"github.com/TheWeiHu/devbrain/internal/jsonedit"
 	"github.com/TheWeiHu/devbrain/internal/projectkey"
 	"github.com/TheWeiHu/devbrain/internal/redact"
+	"github.com/TheWeiHu/devbrain/internal/transcript"
 	"github.com/TheWeiHu/devbrain/internal/version"
 )
 
@@ -41,6 +45,20 @@ var commands = map[string]func(args []string) int{
 	"--help":      cmdHelp,
 	"project-key": cmdProjectKey,
 	"internal":    cmdInternal,
+	"hook":        cmdHook,
+}
+
+// cmdHook runs one harness hook handler under the fail-open contract:
+// whatever happens, exit 0 and never block the agent's turn.
+func cmdHook(args []string) int {
+	if len(args) == 0 {
+		return 0 // even a misregistered hook must not break a turn
+	}
+	h, ok := hooks.Handlers[args[0]]
+	if !ok {
+		return 0
+	}
+	return hooks.Run(h)
 }
 
 func main() {
@@ -101,6 +119,42 @@ func cmdInternal(args []string) int {
 	case "prompt-filter":
 		data, _ := io.ReadAll(os.Stdin)
 		fmt.Print(redact.PromptFilter(string(data)))
+		return 0
+	case "read-event":
+		// one normalized field per call (multiline-safe, like a single jq pull)
+		data, _ := io.ReadAll(os.Stdin)
+		field := ""
+		if len(rest) > 0 {
+			field = rest[0]
+		}
+		fmt.Print(hookev.ReadEvent(string(data), field, ""))
+		return 0
+	case "session-start-context":
+		data, _ := io.ReadAll(os.Stdin)
+		fmt.Print(hookev.SessionStartContext(string(data)))
+		return 0
+	case "response-capture":
+		// TRANSCRIPT [SIDECAR SESSION TS AUTO FALLBACK_TEXT] — legacy CLI shape
+		if len(rest) < 1 {
+			return 0
+		}
+		get := func(i int) string {
+			if i < len(rest) {
+				return rest[i]
+			}
+			return ""
+		}
+		fmt.Print(transcript.ResponseCapture(get(0), get(1), get(2), get(3), get(4) == "1", get(5)))
+		return 0
+	case "gbrain-record":
+		if len(rest) < 3 {
+			return 0
+		}
+		fmt.Print(gbrainlog.Record(rest[0], rest[1], rest[2], os.Getenv("TS")))
+		return 0
+	case "recap":
+		data, _ := io.ReadAll(os.Stdin)
+		fmt.Print(transcript.Recap([]string{string(data)}))
 		return 0
 	case "register-hook":
 		if len(rest) < 4 {
