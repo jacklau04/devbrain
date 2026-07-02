@@ -18,13 +18,20 @@ cycle() {  # one full clean-slate → install → exercise → uninstall pass
   local round="$1"
   echo "== round $round: clean slate =="
   brew uninstall --force devbrain >/dev/null 2>&1
+  brew untap local/e2e >/dev/null 2>&1
   rm -rf ~/.claude ~/.codex ~/.agents ~/devbrain-data ~/.config/devbrain ~/.local/bin/devbrain*
   crontab -r 2>/dev/null
   systemctl --user disable --now devbrain-flush.timer >/dev/null 2>&1
   sed -i '/added by devbrain installer/,+1d' ~/.bashrc ~/.profile 2>/dev/null
 
   echo "== round $round: brew install =="
-  brew install --formula ~/e2e/devbrain.rb >/dev/null 2>&1 || brew install --formula ~/e2e/devbrain.rb
+  # modern brew refuses path formulas — install through a throwaway local tap
+  TAPDIR="$(brew --repository)/Library/Taps/local/homebrew-e2e"
+  rm -rf "$TAPDIR" && mkdir -p "$TAPDIR/Formula"
+  cp ~/e2e/devbrain.rb "$TAPDIR/Formula/devbrain.rb"
+  git -C "$TAPDIR" init -q 2>/dev/null; git -C "$TAPDIR" add -A 2>/dev/null
+  git -C "$TAPDIR" -c user.name=e2e -c user.email=e2e@localhost commit -qm formula 2>/dev/null
+  brew install local/e2e/devbrain >/dev/null 2>&1 || brew install local/e2e/devbrain
   check "binary on PATH"        'command -v devbrain'
   check "version matches"       '[ "$(devbrain version)" = "$EXPECTED_VERSION" ]'
   check "static linux binary"   'file "$(command -v devbrain)" | grep -q "statically linked\|static-pie"'

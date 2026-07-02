@@ -34,4 +34,11 @@ if ! grep -q linuxbrew ~/.bashrc 2>/dev/null; then
   } >> ~/.bashrc
 fi
 "$BREW" --version | head -1
+
+# Linuxbrew's compiler gate: any non-bottled formula (ours, pre-tap) refuses
+# to install without brew's own toolchain present. Bottled, no compile.
+"$BREW" list gcc >/dev/null 2>&1 || {
+  export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_INSTALL_CLEANUP=1
+  "$BREW" install -q gcc 2>&1 | tail -1
+}
 echo "prep-box: done"
