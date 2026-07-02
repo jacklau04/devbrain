@@ -150,7 +150,7 @@ devbrain todo add "<imperative one-line task>" -p <0-100> -b "<why / acceptance 
 ### 4. Reconcile the queue against merged PRs
 Three checks that sync task state with what actually merged. "Merged" always comes from
 GitHub via `gh` (distill runs from `$cwd`, the working repo), so every check below no-ops
-the same way offline — no `gh`, skip silently. See [[theweihu__devbrain/todo-queue]].
+the same way offline — no `gh`, skip silently. See [[<owner>__<repo>/todo-queue]].
 
 **Close merged review-tasks (confirmation-gated).** A task in `review` has an open PR; it
 becomes `done` only when that PR **merges**. Infer that here so the queue self-heals:

@@ -57,7 +57,7 @@ For each contradicted fact, append a note on its own line right after it:
 ⚠ stale (YYYY-MM-DD): <what contradicts it — cite the file / PR# / page>
 ```
 - Cite the evidence every time (e.g. "code removed this in #12", "PR #9 closed
-  unmerged", "contradicts theweihu__devbrain/implementation").
+  unmerged", "contradicts <owner>__<repo>/implementation").
 - **Skip facts that already carry a `⚠ stale` note** — don't re-mark; reconcile must
   converge, not thrash.
 - Change **nothing else**: no deletions, no rewrites, no reordering.

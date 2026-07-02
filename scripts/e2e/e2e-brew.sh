@@ -6,9 +6,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-HOST="${E2E_HOST:-ec2-user@3.224.127.196}"
-KEY="${E2E_KEY:-$HOME/.ssh/LightsailProdKey-us-east-1.pem}"
-[ -f "$KEY" ] || { echo "skip: e2e box key not present ($KEY)"; exit 0; }
+# Box coordinates come from the environment — nothing machine-specific is
+# committed. Set E2E_HOST (user@host) and E2E_KEY (ssh key path) to enable.
+HOST="${E2E_HOST:-}"
+KEY="${E2E_KEY:-}"
+[ -n "$HOST" ] && [ -n "$KEY" ] && [ -f "$KEY" ] || { echo "skip: set E2E_HOST + E2E_KEY to run the clean-box e2e"; exit 0; }
 command -v goreleaser >/dev/null 2>&1 || { echo "skip: goreleaser not installed"; exit 0; }
 
 TMPKEY="$(mktemp)"; cp "$KEY" "$TMPKEY"; chmod 600 "$TMPKEY"
