@@ -32,9 +32,13 @@ cycle() {  # one full clean-slate → install → exercise → uninstall pass
   git -C "$TAPDIR" init -q 2>/dev/null; git -C "$TAPDIR" add -A 2>/dev/null
   git -C "$TAPDIR" -c user.name=e2e -c user.email=e2e@localhost commit -qm formula 2>/dev/null
   brew install local/e2e/devbrain >/dev/null 2>&1 || brew install local/e2e/devbrain
+  hash -r   # drop bash's stale PATH hash from the previous round's binary
   check "binary on PATH"        'command -v devbrain'
   check "version matches"       '[ "$(devbrain version)" = "$EXPECTED_VERSION" ]'
-  check "static linux binary"   'file "$(command -v devbrain)" | grep -q "statically linked\|static-pie"'
+  # file -L: the brew bin path is a symlink into the Cellar; Linux file(1)
+  # doesn't follow it by default. grep drains the stream (no -q): a -q
+  # early-exit SIGPIPEs the producer under pipefail and fails a real match.
+  check "static linux binary"   'file -L "$(command -v devbrain)" | grep "statically linked\|static-pie" >/dev/null'
 
   echo "== round $round: devbrain install =="
   mkdir -p ~/stubbin
@@ -78,7 +82,9 @@ cycle() {  # one full clean-slate → install → exercise → uninstall pass
   for i in $(seq 1 30); do curl -sf http://127.0.0.1:8787/api/whoami >/dev/null 2>&1 && break; sleep 0.2; done
   check "queue whoami"     'curl -sf http://127.0.0.1:8787/api/whoami | grep -q devbrain-queue'
   check "queue lists task" 'curl -sf http://127.0.0.1:8787/api/todos | grep -q "box task"'
-  check "dashboard served" 'curl -sf http://127.0.0.1:8787/ | grep -qi "<html"'
+  # grep WITHOUT -q (drain the stream): under pipefail a -q early-exit
+  # SIGPIPEs curl and turns a real 200+match into pipeline failure.
+  check "dashboard served" 'curl -sf http://127.0.0.1:8787/ | grep -i "<html" >/dev/null'
   kill "$QP" 2>/dev/null
 
   echo "== round $round: uninstall =="
@@ -87,6 +93,7 @@ cycle() {  # one full clean-slate → install → exercise → uninstall pass
   check "skills removed"      '[ ! -e ~/.claude/skills/continue ]'
   check "data repo intact"    '[ -n "$log" ] && [ -f "$log" ]'
   brew uninstall --force devbrain >/dev/null 2>&1
+  hash -r   # bash caches the resolved path; without this command -v reports the deleted binary
   check "binary gone"         '! command -v devbrain'
 }
 
