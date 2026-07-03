@@ -19,3 +19,4 @@
 {"name": "get-digit-arg-skipped", "cmd": "gbrain get 42 fix__demo/numbered", "out": "body", "project": "fix__demo", "ts": "2026-06-20T10:00:00Z"}
 {"name": "get-shell-meta-in-arg", "cmd": "gbrain get \"a;b<c\"", "out": "body", "project": "fix__demo", "ts": "2026-06-20T10:00:00Z"}
 {"name": "unparseable-line-fallback", "cmd": "gbrain get \"unclosed quote fix__demo/frag", "out": "page_not_found", "project": "fix__demo", "ts": "2026-06-20T10:00:00Z"}
+{"name": "search-two-hits-bot", "cmd": "gbrain search \"flaky tests\"", "out": "[0.9123] fix__demo/testing -- # testing notes\n[0.8000] fix__demo/ci -- # ci\n", "project": "fix__demo", "ts": "2026-06-20T10:00:00Z", "auto": true}

@@ -237,7 +237,7 @@ func TestGbrainFastBailAndRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"ts": "2026-06-20T10:30:00Z", "project": "fix__demo", "cmd": "gbrain search \"flaky tests\"", "modes": ["search"], "hits": 1, "slugs": ["fix__demo/testing"]}` + "\n"
+	want := `{"ts": "2026-06-20T10:30:00Z", "project": "fix__demo", "cmd": "gbrain search \"flaky tests\"", "modes": ["search"], "hits": 1, "slugs": ["fix__demo/testing"], "auto": false}` + "\n"
 	if string(b) != want {
 		t.Errorf("record:\n got %q\nwant %q", b, want)
 	}
