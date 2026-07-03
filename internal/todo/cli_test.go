@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -82,10 +83,18 @@ func TestTodoCLI(t *testing.T) {
 	})
 
 	t.Run("fixed-set run parks newly added tasks", func(t *testing.T) {
-		// WriteOnlySet's marker in cwd ⇒ a --only nightshift run is live: an add
-		// must land held+marked so `next` can't hand it out and Unfence releases it.
+		// WriteOnlySet's marker in cwd plus a LIVE orchestrator.pid ⇒ a --only
+		// nightshift run is live: an add must land held+marked so `next` can't
+		// hand it out and Unfence releases it.
 		fenced := t.TempDir()
 		clitest.WriteFile(t, filepath.Join(fenced, ".nightshift", "only.txt"), a+","+b+"\n")
+		// Marker alone (only.txt outlives the run) must NOT park: no live pid.
+		stale := runWith(clitest.RunOpts{Dir: fenced}, "add", "post-run task").Out()
+		if got := field(stale, "status"); got != "open" {
+			t.Errorf("add with stale marker but no live run -> status %q, want open", got)
+		}
+		clitest.WriteFile(t, filepath.Join(fenced, ".nightshift", "orchestrator.pid"),
+			strconv.Itoa(os.Getpid())+"\n")
 		id := runWith(clitest.RunOpts{Dir: fenced}, "add", "mid-run task").Out()
 		if got := field(id, "status"); got != "held" {
 			t.Errorf("add during fixed-set run -> status %q, want held", got)

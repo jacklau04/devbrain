@@ -32,6 +32,19 @@ const (
 // path, so a concurrent fleet on a DIFFERENT checkout releases only its own holds.
 func FenceNote(repo string) string { return FenceMark + fenceBy + repo + fenceTail }
 
+// SameCheckout reports whether two checkout paths name the same directory,
+// tolerating symlinked spellings — the fence tag is written from os.Getwd()
+// (physical path) while --repo resolves via filepath.Abs (symlinks kept), so a
+// raw compare would strand a run's own holds (macOS /tmp vs /private/tmp).
+func SameCheckout(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && ra == rb
+}
+
 // FenceRepo extracts the checkout path a fence reason was tagged with, or "" for
 // an untagged (legacy / self-heal) marker any run may release.
 func FenceRepo(reason string) string {

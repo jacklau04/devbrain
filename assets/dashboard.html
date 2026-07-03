@@ -1882,9 +1882,11 @@ function chProjTime(){
   const colByCat={}; cats.forEach((c,i)=>colByCat[c]=c==='__other'?'#5b6472':STC[i%STC.length]);
   // Bin span from the explicit filter window so empty leading/trailing bins still show.
   const from=$('pf-from').value, to=$('pf-to').value, DAY=864e5;
-  const times=P.map(p=>p.ms).filter(t=>!isNaN(t));
-  let lo=from?new Date(from+'T00:00:00').getTime():Math.min(...times);
-  let hi=to?new Date(to+'T23:59:59').getTime():Math.max(...times);
+  // Single pass, not Math.min(...spread) — P can exceed the JS argument limit.
+  let tmin=Infinity,tmax=-Infinity;
+  P.forEach(p=>{ if(!isNaN(p.ms)){ if(p.ms<tmin)tmin=p.ms; if(p.ms>tmax)tmax=p.ms; } });
+  let lo=from?new Date(from+'T00:00:00').getTime():tmin;
+  let hi=to?new Date(to+'T23:59:59').getTime():tmax;
   if(hi<lo) hi=lo;
   const spanD=(hi-lo)/DAY;
   const stepD=spanD<=45?1:spanD<=120?7:spanD<=540?28:90;          // day / week / 4-week / quarter

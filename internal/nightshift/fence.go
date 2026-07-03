@@ -117,10 +117,11 @@ func (o *Orch) WriteOnlySet() {
 }
 
 // Unfence releases the tasks THIS run parked — identified by the hold MARKER,
-// so it self-heals after an unclean shutdown or a removed clone. Only reasons
+// so it self-heals after an unclean shutdown of THIS checkout. Only reasons
 // starting with FenceMark are touched (human holds safe); of those, a reason
 // tagged with a DIFFERENT checkout path is left alone so a concurrent fleet on
-// another checkout of the same project keeps its own holds. Untagged legacy
+// another checkout of the same project keeps its own holds — the cost is that
+// holds tagged by a deleted clone need a manual `todo release`. Untagged legacy
 // marks match any run.
 func (o *Orch) Unfence() {
 	out, _ := o.todoAll("list", "held")
@@ -134,7 +135,7 @@ func (o *Orch) Unfence() {
 		if !strings.HasPrefix(reason, FenceMark) {
 			continue
 		}
-		if r := fenceRepo(reason); r != "" && r != o.Opt.Repo {
+		if r := fenceRepo(reason); r != "" && !task.SameCheckout(r, o.Opt.Repo) {
 			continue
 		}
 		o.todo("release", id)

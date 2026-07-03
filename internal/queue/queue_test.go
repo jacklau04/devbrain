@@ -404,12 +404,13 @@ func TestScaleNightshift(t *testing.T) {
 		t.Errorf("control file after floor clamp = %q", b)
 	}
 
-	// Ceiling clamp: proj__a has 2 non-terminal tasks → 9 clamps to 2.
-	if res := q.ScaleNightshift("proj__a", 9); res["workers"] != 2 {
-		t.Fatalf("ceiling clamp to work count: %v", res)
+	// No ceiling clamp: the request is stored raw (the orchestrator caps to live
+	// work each tick), so a target above today's queue survives until work arrives.
+	if res := q.ScaleNightshift("proj__a", 9); res["workers"] != 9 {
+		t.Fatalf("request stored unclamped: %v", res)
 	}
-	if b, _ := os.ReadFile(ctrl); strings.TrimSpace(string(b)) != "2" {
-		t.Errorf("control file after ceiling clamp = %q", b)
+	if b, _ := os.ReadFile(ctrl); strings.TrimSpace(string(b)) != "9" {
+		t.Errorf("control file after scale = %q", b)
 	}
 }
 

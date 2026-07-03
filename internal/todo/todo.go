@@ -23,6 +23,7 @@ import (
 
 	"github.com/TheWeiHu/devbrain/internal/config"
 	"github.com/TheWeiHu/devbrain/internal/frontmatter"
+	"github.com/TheWeiHu/devbrain/internal/procutil"
 	"github.com/TheWeiHu/devbrain/internal/projectkey"
 	"github.com/TheWeiHu/devbrain/internal/task"
 )
@@ -207,10 +208,14 @@ func onlyMatch(id string) bool {
 
 // fixedSetRepo returns the checkout path of a live fixed-set (--only) nightshift
 // run — the dir holding WriteOnlySet's persistent marker (.nightshift/only.txt,
-// non-empty), found walking up from cwd — or "" if none is active. That dir IS
-// the run's o.Opt.Repo, so a task parked with FenceNote(repo) is released only by
-// that run's Unfence. Worker worktrees are SIBLINGS of the base repo (repo-wN),
-// so the walk never crosses from one fleet's worktree into another's.
+// non-empty), found walking up from cwd — or "" if none is active. only.txt
+// deliberately outlives the run (the status emitter scopes counts to it), so the
+// marker alone doesn't mean "run live": the dir must also hold a live
+// orchestrator.pid, or every post-run add would be parked with no run left to
+// release it. That dir IS the run's o.Opt.Repo, so a task parked with
+// FenceNote(repo) is released only by that run's Unfence. Worker worktrees are
+// SIBLINGS of the base repo (repo-wN), so the walk never crosses from one
+// fleet's worktree into another's.
 func fixedSetRepo() string {
 	dir, err := os.Getwd()
 	if err != nil {
@@ -219,7 +224,9 @@ func fixedSetRepo() string {
 	for {
 		if b, err := os.ReadFile(filepath.Join(dir, ".nightshift", "only.txt")); err == nil &&
 			strings.TrimSpace(string(b)) != "" {
-			return dir
+			if pid, ok := procutil.ReadPidfile(filepath.Join(dir, ".nightshift", "orchestrator.pid")); ok && procutil.Alive(pid) {
+				return dir
+			}
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
