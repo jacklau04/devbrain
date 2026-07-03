@@ -50,7 +50,8 @@ func TestRecordGolden(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			got := Record(c["cmd"].(string), c["out"].(string), c["project"].(string), c["ts"].(string))
+			auto, _ := c["auto"].(bool) // corpus omits it -> typed (false)
+			got := Record(c["cmd"].(string), c["out"].(string), c["project"].(string), c["ts"].(string), auto)
 			if want := g["out"].(string); got != want {
 				t.Errorf("got  %s\nwant %s", got, want)
 			}
@@ -217,7 +218,7 @@ func TestModes(t *testing.T) {
 
 func TestRecordNoModes(t *testing.T) {
 	t.Parallel()
-	if got := Record("ls -la", "files", "p", "2026-01-01T00:00:00Z"); got != "" {
+	if got := Record("ls -la", "files", "p", "2026-01-01T00:00:00Z", false); got != "" {
 		t.Errorf("no gbrain verb must yield empty record, got %s", got)
 	}
 }

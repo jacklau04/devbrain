@@ -248,9 +248,12 @@ func GetTarget(cmd string, fallback bool) string {
 
 // Record renders one gbrain query-log line for a captured command + output
 // (gbrain_record), or "" when the command ran no whitelisted gbrain verb.
+// auto marks a nightshift/autonomous session (its keyboard-vs-bot origin) so
+// the dashboard can split typed from bot hit-/useful-rate. Emitted as a
+// trailing "auto" key; readers default a missing key to false (typed).
 // The output is byte-identical to Python json.dumps(..., ensure_ascii=False)
-// with key order ts, project, cmd, modes, hits, slugs.
-func Record(cmd, out, project, ts string) string {
+// with key order ts, project, cmd, modes, hits, slugs, auto.
+func Record(cmd, out, project, ts string, auto bool) string {
 	modes := Modes(cmd)
 	if len(modes) == 0 {
 		return ""
@@ -298,6 +301,12 @@ func Record(cmd, out, project, ts string) string {
 	b.WriteString(strconv.Itoa(hits))
 	b.WriteString(`, "slugs": `)
 	writePyStrings(&b, slugs)
+	b.WriteString(`, "auto": `)
+	if auto {
+		b.WriteString("true")
+	} else {
+		b.WriteString("false")
+	}
 	b.WriteByte('}')
 	return b.String()
 }
