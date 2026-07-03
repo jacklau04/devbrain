@@ -108,7 +108,8 @@ is their normal hook trust flow.
 | **`/distill`** | fold new log → brain pages **and** queue tasks |
 | **`/continue`** | resume: brief, then work the top task as a minimal-MVP PR |
 | **`/work`** | lean drain turn: top task → MVP PR, no fold-in/briefing (for `/loop` + nightshift) |
-| **`/loop /work`** | keep draining the queue fast, one MVP PR per task |
+| **`/loop /work`** | headless fast drain: one MVP PR per task, no fold-in/briefing per turn |
+| **`/loop /continue`** | interactive resume+drain: same, but folds new log into the brain each turn |
 | **`/reconcile`** | mark brain facts the live repo contradicts (auto-runs ~daily) |
 | `gbrain search` / `devbrain brain search` | query the brain from the shell (gbrain if installed, else offline grep) |
 | `devbrain queue` | browser control plane for the queue (view · edit · prioritize · unblock) |
