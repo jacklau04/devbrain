@@ -336,7 +336,8 @@ func Gbrain(e *Event) error {
 		}
 	}
 
-	record := gbrainlog.Record(cmd, out, project, Now().Format("2006-01-02T15:04:05Z"))
+	auto := autoSession(cwd, projectkey.WorktreeSlug(cwd))
+	record := gbrainlog.Record(cmd, out, project, Now().Format("2006-01-02T15:04:05Z"), auto)
 	if record == "" {
 		return nil // no real gbrain subcommand -> touch nothing
 	}
