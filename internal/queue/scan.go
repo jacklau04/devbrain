@@ -295,6 +295,7 @@ type GBQuery struct {
 	Slugs  any    `json:"slugs"`
 	Q      string `json:"q"`
 	Target string `json:"target"`
+	Auto   bool   `json:"auto"` // nightshift/bot session vs typed; missing key -> false
 }
 
 // GBrainQueries reads every project's gbrain-queries.log (gbrain_queries).
@@ -353,9 +354,10 @@ func (q *Queue) GBrainQueries(days int, project string) []*GBQuery {
 			if !pyTruthy(slugs) {
 				slugs = []any{}
 			}
+			auto, _ := e["auto"].(bool)
 			out = append(out, &GBQuery{
 				TS: ts, Date: truncStr(ts, 10), P: proj, Read: read,
-				Modes: modes, Hits: hits, Slugs: slugs, Q: topic, Target: target,
+				Modes: modes, Hits: hits, Slugs: slugs, Q: topic, Target: target, Auto: auto,
 			})
 		}
 	}

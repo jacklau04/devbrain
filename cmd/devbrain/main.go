@@ -172,7 +172,7 @@ func cmdInternal(args []string) int {
 		if len(rest) < 3 {
 			return 0
 		}
-		fmt.Print(gbrainlog.Record(rest[0], rest[1], rest[2], os.Getenv("TS")))
+		fmt.Print(gbrainlog.Record(rest[0], rest[1], rest[2], os.Getenv("TS"), os.Getenv("AUTO") == "1"))
 		return 0
 	case "recap":
 		data, _ := io.ReadAll(os.Stdin)
