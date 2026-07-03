@@ -335,6 +335,75 @@ func TestComponentToggleMatrix(t *testing.T) {
 	}
 }
 
+func TestDryRunPreviewsWithoutWriting(t *testing.T) {
+	home := setupHome(t)
+	out, rc := install(t, "--dry-run", "--yes")
+	if rc != 0 {
+		t.Fatalf("--dry-run failed:\n%s", out)
+	}
+	for _, want := range []string{"nothing below is written", "settings.json", "config.json", "(dry run"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dry-run output missing %q:\n%s", want, out)
+		}
+	}
+	// The preview must not touch a single target path.
+	for _, p := range []string{
+		config.Path(),
+		filepath.Join(home, "devbrain-data", ".git"),
+		filepath.Join(home, ".claude", "settings.json"),
+		filepath.Join(home, ".claude", "CLAUDE.md"),
+		filepath.Join(home, ".codex", "hooks.json"),
+		filepath.Join(home, "Library", "LaunchAgents", "com.devbrain.flush.plist"),
+	} {
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("dry-run wrote %s", p)
+		}
+	}
+	// --explain is a preview too (annotated), never a mutation.
+	if _, rc := install(t, "--explain", "--yes"); rc != 0 {
+		t.Errorf("--explain should exit 0")
+	}
+	if _, err := os.Stat(config.Path()); err == nil {
+		t.Errorf("--explain wrote config.json")
+	}
+}
+
+// The global gbrain install is gated: it runs only on explicit consent, and
+// always with the pinned package.
+func TestGbrainInstallGatedAndPinned(t *testing.T) {
+	newHome := func() string {
+		home := setupHome(t)
+		t.Setenv("DEVBRAIN_GBRAIN", "") // undecided — let the gate decide
+		// stub bun into the on-PATH stub dir so consent would install
+		bun := filepath.Join(home, ".stubbin", "bun")
+		script := "#!/bin/sh\necho \"$0 $*\" >> \"" + filepath.Join(home, "stub-calls.log") + "\"\nexit 0\n"
+		if err := os.WriteFile(bun, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return home
+	}
+
+	// no consent (unattended --yes): bun is never invoked
+	home := newHome()
+	if _, rc := install(t, "--yes"); rc != 0 {
+		t.Fatal("install --yes failed")
+	}
+	if b, _ := os.ReadFile(filepath.Join(home, "stub-calls.log")); strings.Contains(string(b), "add -g gbrain") {
+		t.Errorf("unattended --yes ran a global gbrain install:\n%s", b)
+	}
+
+	// with --install-deps and an override: bun installs the pinned package
+	home2 := newHome()
+	t.Setenv("DEVBRAIN_GBRAIN_PACKAGE", "gbrain@9.9.9")
+	if _, rc := install(t, "--yes", "--install-deps"); rc != 0 {
+		t.Fatal("install --install-deps failed")
+	}
+	b, _ := os.ReadFile(filepath.Join(home2, "stub-calls.log"))
+	if !strings.Contains(string(b), "add -g gbrain@9.9.9") {
+		t.Errorf("--install-deps did not run the pinned global install:\n%s", b)
+	}
+}
+
 func TestUninstallReversesInstall(t *testing.T) {
 	home := setupHome(t)
 	if out, rc := install(t, "--yes"); rc != 0 {

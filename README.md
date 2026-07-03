@@ -72,11 +72,18 @@ y/n per component; non-interactive runs take every default. When it finishes it 
 the browser dashboard (`devbrain queue` — Board · Nightshift · Profile). Common flags:
 
 ```bash
+devbrain install --dry-run                     # preview every path it would touch; write nothing
+devbrain install --explain                     # dry-run plus a one-line why per action
 devbrain install --without nightshift          # skip the overnight loop
 devbrain install --only capture                # just the prompt-capture hook
 devbrain install --no-open                     # don't auto-open the dashboard
 DEVBRAIN_DATA=~/path devbrain install          # store the brain elsewhere
 ```
+
+The optional gbrain engine is a global `bun add -g` — a mutation outside devbrain's
+footprint — so it never installs unattended: pass `--install-deps` (or `--with-gbrain`,
+or answer the terminal prompt) to opt in. The pinned package is `gbrain@0.18.2`,
+overridable with `DEVBRAIN_GBRAIN_PACKAGE`. Offline `devbrain brain search` works with no engine.
 
 devbrain needs only your coding agent and Git — no python3 or Node. Some agents may
 ask you to review and trust the installed hooks with `/hooks` on next startup; that
@@ -123,6 +130,6 @@ You stay the only `nightshift → main` gate.
 - [`SECURITY.md`](SECURITY.md) — what's captured, where it's stored, who can see it, and how to report a vuln
 - [`CHANGELOG.md`](CHANGELOG.md) — release history
 - `make test` — run the full suite
-- Ranked + semantic brain search comes from the optional gbrain engine, installed by default; skip it with `devbrain install --without-gbrain` and the offline `devbrain brain search` still works.
+- Ranked + semantic brain search comes from the optional gbrain engine; opt in with `devbrain install --install-deps` (the offline `devbrain brain search` still works without it).
 - `devbrain import` — seed the brain from your existing agent transcripts.
 - Re-run `devbrain install` anytime; it only adds what's missing. Tear down with `devbrain uninstall` (leaves your data untouched).
