@@ -117,11 +117,25 @@ func (c *ctx) display(p string) string {
 // ── option parsing ────────────────────────────────────────────────────────────
 
 type options struct {
-	on       map[string]bool
-	explicit map[string]bool
-	yes      bool
-	gbrain   string // "" undecided · "1" install · "0" skip (flag or DEVBRAIN_GBRAIN)
-	open     string // "" default · "1" open · "0" skip
+	on          map[string]bool
+	explicit    map[string]bool
+	yes         bool
+	gbrain      string // "" undecided · "1" install · "0" skip (flag or DEVBRAIN_GBRAIN)
+	open        string // "" default · "1" open · "0" skip
+	dryRun      bool   // --dry-run/--explain: print the plan, touch nothing
+	explain     bool   // --explain: dry-run plus a one-line why per action
+	installDeps bool   // --install-deps: consent to a global `bun add -g gbrain`
+}
+
+// defaultGbrainPackage pins the engine install for reproducible/auditable runs;
+// override with DEVBRAIN_GBRAIN_PACKAGE (e.g. gbrain@latest or a fork).
+const defaultGbrainPackage = "gbrain@0.18.2"
+
+func gbrainPackage() string {
+	if p := os.Getenv("DEVBRAIN_GBRAIN_PACKAGE"); p != "" {
+		return p
+	}
+	return defaultGbrainPackage
 }
 
 func parseArgs(args []string, errw io.Writer) (*options, int) {
@@ -202,8 +216,14 @@ func parseArgs(args []string, errw io.Writer) (*options, int) {
 			o.open = "1"
 		case "--no-open", "--no-open-dashboard":
 			o.open = "0"
+		case "--dry-run", "-n":
+			o.dryRun = true
+		case "--explain":
+			o.dryRun, o.explain = true, true
+		case "--install-deps":
+			o.installDeps = true
 		default:
-			fmt.Fprintf(errw, "install: unknown arg: %s (use --with/--without/--only <components>, --yes)\n", a)
+			fmt.Fprintf(errw, "install: unknown arg: %s (use --with/--without/--only <components>, --yes, --dry-run, --install-deps)\n", a)
 			return nil, 1
 		}
 	}
@@ -223,6 +243,13 @@ func Run(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 	if err != nil {
 		fmt.Fprintf(stderr, "install: %v\n", err)
 		return 1
+	}
+
+	// Preview mode: resolve the data home read-only and print the plan without
+	// touching anything (no migrate, no writes, no schedulers, no gbrain).
+	if o.dryRun {
+		c.data = config.DataDir()
+		return c.preview(o)
 	}
 
 	// 0. Legacy sweep FIRST — recover the sed-pinned data path into config.json
@@ -271,12 +298,7 @@ func Run(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 			}
 		}
 	}
-	var picked []string
-	for _, comp := range allComponents {
-		if o.on[comp] {
-			picked = append(picked, comp)
-		}
-	}
+	picked := pickedComponents(o)
 	fmt.Fprintf(stdout, "  components  : %s\n", strings.Join(picked, " "))
 
 	// 3. Data repo (the source of truth) — create/clone when missing.
@@ -312,6 +334,91 @@ func Run(args []string, stdout, stderr io.Writer, stdin io.Reader) int {
 
 	c.summary(o)
 	c.openDashboard(o)
+	return 0
+}
+
+func pickedComponents(o *options) []string {
+	var picked []string
+	for _, comp := range allComponents {
+		if o.on[comp] {
+			picked = append(picked, comp)
+		}
+	}
+	return picked
+}
+
+// preview prints every path install would create/modify for the selected
+// components and exits without writing (--dry-run / --explain). It mirrors the
+// wire() decisions; --explain adds a one-line why under each action.
+func (c *ctx) preview(o *options) int {
+	w := c.stdout
+	picked := pickedComponents(o)
+	fmt.Fprintf(w, "devbrain install --dry-run (%s) — nothing below is written\n", version.String())
+	fmt.Fprintf(w, "  binary      : %s\n", c.bin)
+	fmt.Fprintf(w, "  data home   : %s\n", c.data)
+	fmt.Fprintf(w, "  components  : %s\n", strings.Join(picked, " "))
+
+	line := func(verb, path, why string) {
+		fmt.Fprintf(w, "  %-7s %s\n", verb, c.display(path))
+		if o.explain && why != "" {
+			fmt.Fprintf(w, "            ↳ %s\n", why)
+		}
+	}
+	on := func(n string) bool { return o.on[n] }
+
+	if exists(filepath.Join(c.data, ".git")) {
+		line("exists", c.data, "data repo already initialized — left as-is")
+	} else {
+		line("create", c.data, "init or clone the private prompt + brain repo")
+	}
+	line("write", config.Path(), "records the resolved data home the hooks read")
+
+	switch {
+	case o.gbrain == "0":
+		line("skip", "gbrain", "opted out — offline 'devbrain brain' search still works")
+	case haveCmd("gbrain"):
+		line("run", "gbrain init --pglite", "gbrain already present — init the local brain")
+	case o.gbrain == "1" || o.installDeps:
+		line("install", gbrainPackage(), "global 'bun add -g' (consented via --with-gbrain/--install-deps)")
+	default:
+		line("skip", gbrainPackage(), "global install gated — pass --install-deps (or --with-gbrain) to allow")
+	}
+
+	if on("capture") || on("response-trace") || on("nudge") {
+		line("modify", filepath.Join(c.claude, "settings.json"), "register Claude hooks (capture/response/nudge)")
+	}
+	if on("codex") {
+		line("modify", filepath.Join(c.codex, "hooks.json"), "register Codex hooks")
+		line("modify", filepath.Join(c.codex, "config.toml"), "enable Codex 'hooks' feature")
+		line("modify", filepath.Join(c.codex, "AGENTS.md"), "devbrain instruction block")
+	}
+	if on("flusher") {
+		if c.goos == "darwin" {
+			line("create", c.plistPath(), "launchd 5-min auto-flush job")
+		} else {
+			line("create", filepath.Join(c.home, ".config", "systemd", "user", "devbrain-flush.timer"), "systemd (or cron) 5-min auto-flush")
+		}
+	}
+	if on("skills") {
+		for _, d := range c.skillsDirs() {
+			line("write", d, "install the bundled skills")
+		}
+	}
+	if on("claude-md") {
+		line("modify", filepath.Join(c.claude, "CLAUDE.md"), "devbrain instruction block + global-prefs @import")
+	}
+	if on("git-gate") {
+		line("note", "git-gate", "sets core.hooksPath only when run inside a devbrain checkout")
+	}
+	if on("nightshift") {
+		line("note", "nightshift", "toolset ships in the binary — no files written")
+	}
+	lb := filepath.Join(c.home, ".local", "bin")
+	line("link", filepath.Join(lb, "devbrain-todo"), "back-compat alias -> the binary")
+	line("link", filepath.Join(lb, "devbrain-import"), "back-compat alias -> the binary")
+	line("note", "first-run import", "previews existing history; seeds only on consent (fresh brain)")
+
+	fmt.Fprintln(w, "  (dry run — re-run without --dry-run to apply)")
 	return 0
 }
 
@@ -412,16 +519,19 @@ func (c *ctx) offerGbrain(o *options) {
 		}
 		return
 	}
-	want := o.gbrain == "1"
+	pkg := gbrainPackage()
+	// A global 'bun add -g' is a mutation outside devbrain's own footprint, so
+	// it is opt-in: explicit consent (--with-gbrain/--install-deps) or a TTY yes.
+	want := o.gbrain == "1" || o.installDeps
 	if !want && isTTY(os.Stdin) && !o.yes {
-		fmt.Fprintln(c.stdout, "  gbrain adds ranked + semantic search (global 'bun add -g gbrain'; decline and offline search still works).")
+		fmt.Fprintf(c.stdout, "  gbrain adds ranked + semantic search (global 'bun add -g %s'; decline and offline search still works).\n", pkg)
 		fmt.Fprintf(c.stdout, "  Install gbrain now? [Y/n]: ")
 		want = !strings.HasPrefix(strings.ToLower(readLine(c.stdin)), "n")
 	}
 	if !want || !haveCmd("bun") {
-		return // silent skip: no bun, or not asked for
+		return // silent skip: no bun, or consent not given
 	}
-	if run("bun", "add", "-g", "gbrain") == nil && haveCmd("gbrain") {
+	if run("bun", "add", "-g", pkg) == nil && haveCmd("gbrain") {
 		_ = run("gbrain", "init", "--pglite")
 		fmt.Fprintln(c.stdout, "  gbrain      : installed via bun — local brain ready")
 	} else {
