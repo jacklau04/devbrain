@@ -388,4 +388,21 @@ func TestDashboardParity(t *testing.T) {
 			t.Errorf("GET / differs from assets/dashboard.html (%d vs %d bytes)", len(got), len(want))
 		}
 	})
+
+	// The split-out CSS/JS assets are served byte-equal to their files too.
+	for _, a := range []struct{ route, file string }{
+		{"/dashboard.css", "dashboard.css"},
+		{"/dashboard.js", "dashboard.js"},
+	} {
+		t.Run("GET "+a.route, func(t *testing.T) {
+			got := dashFetchBytes(t, base+a.route)
+			want, err := os.ReadFile(filepath.Join(root, "assets", a.file))
+			if err != nil {
+				t.Fatalf("read assets/%s: %v", a.file, err)
+			}
+			if string(got) != string(want) {
+				t.Errorf("GET %s differs from assets/%s (%d vs %d bytes)", a.route, a.file, len(got), len(want))
+			}
+		})
+	}
 }

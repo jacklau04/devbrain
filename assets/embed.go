@@ -6,10 +6,20 @@ package assets
 
 import "embed"
 
-// DashboardHTML is served byte-identical at / and /index.html.
+// DashboardHTML is served byte-identical at / and /index.html; it links the
+// sibling stylesheet and script it was split from.
 //
 //go:embed dashboard.html
 var DashboardHTML []byte
+
+// DashboardCSS and DashboardJS are the extracted styles/scripts, served
+// byte-identical at /dashboard.css and /dashboard.js.
+//
+//go:embed dashboard.css
+var DashboardCSS []byte
+
+//go:embed dashboard.js
+var DashboardJS []byte
 
 // Skills is the embedded skills tree (skills/<name>/SKILL.md …).
 //
