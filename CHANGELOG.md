@@ -8,6 +8,19 @@ of truth for the current version.
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-07-03
+- **Token accounting hardened.** Subagent turns are captured (`SubagentStop`); import
+  re-derives token rows from on-disk transcripts; a message's usage is counted from its
+  largest snapshot; repeated Stop-hook captures are deduped by stable turn identity.
+  `devbrain import --tokens-only --apply` heals historical over-counts.
+- npm distribution channel removed — devbrain ships via Homebrew, `go install`, and release
+  tarballs only.
+- Internals: nightshift's decision logic extracted into a pure `plan/` subpackage; queue and
+  todo collapsed onto one shared task read model; `frontmatter.Parse` tolerates awk-style
+  fences; Python string helpers consolidated into `internal/pytext`; the bash test suite
+  replaced by Go-native CLI tests.
+
+## [1.0.0] — 2026-07-03
 - **The runtime is a single Go binary.** The capture hooks, event shim, redaction,
   recap summarizer, todo queue, brain fallback, flusher, importer, dashboard server,
   install/uninstall, and the whole nightshift subsystem — all one static `devbrain`
@@ -15,14 +28,8 @@ of truth for the current version.
   byte-for-byte by goldens captured from the retired bash/python implementation
   (`testdata/golden/`), now the immutable behavioral spec. `devbrain install` replaces
   `./setup`; runtime dependencies drop to git alone.
-- **Token accounting is accurate.** Subagent turns are captured (`SubagentStop`); import
-  re-derives token rows from on-disk transcripts; a message's usage is counted from its
-  largest snapshot; repeated Stop-hook captures are deduped by stable turn identity.
-  `devbrain import --tokens-only --apply` heals historical over-counts.
 - **Dashboard** surfaces cache-read cost (share-over-time + $/turn scatter) and per-turn
   response recaps.
-- npm distribution removed — devbrain ships via Homebrew, `go install`, and release
-  tarballs only. Python string-semantics helpers consolidated into `internal/pytext`.
 
 ## [0.5.1] — 2026-06-29
 - Preferences edit history logs context-free (`n=0`) diffs, so every logged line is a real change.
@@ -61,7 +68,9 @@ has landed (minor for new user-facing capability, patch for fix/doc batches), be
 onboarding, and after any install/data-layout change. `1.0.0` marks a stable install + data
 contract. Keep [`VERSION`](VERSION) and the `vX.Y.Z` tag in lockstep.
 
-[Unreleased]: https://github.com/TheWeiHu/devbrain/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/TheWeiHu/devbrain/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/TheWeiHu/devbrain/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/TheWeiHu/devbrain/releases/tag/v1.0.0
 [0.5.1]: https://github.com/TheWeiHu/devbrain/releases/tag/v0.5.1
 [0.5.0]: https://github.com/TheWeiHu/devbrain/releases/tag/v0.5.0
 [0.4.1]: https://github.com/TheWeiHu/devbrain/releases/tag/v0.4.1
