@@ -33,12 +33,15 @@ import (
 type Server struct {
 	Q         *Queue
 	Dashboard []byte
+	DashCSS   []byte
+	DashJS    []byte
 	Port      int
 }
 
 // NewServer wires the embedded dashboard to a queue.
 func NewServer(q *Queue) *Server {
-	return &Server{Q: q, Dashboard: assets.DashboardHTML, Port: 8799}
+	return &Server{Q: q, Dashboard: assets.DashboardHTML,
+		DashCSS: assets.DashboardCSS, DashJS: assets.DashboardJS, Port: 8799}
 }
 
 // loopbackHost reports whether a Host/Origin value names a loopback host,
@@ -142,6 +145,14 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 	}
 	if pathOnly == "/" || pathOnly == "/index.html" { // ignore ?project=… (client-side only)
 		s.send(w, 200, s.Dashboard, "text/html; charset=utf-8")
+		return
+	}
+	if pathOnly == "/dashboard.css" {
+		s.send(w, 200, s.DashCSS, "text/css; charset=utf-8")
+		return
+	}
+	if pathOnly == "/dashboard.js" {
+		s.send(w, 200, s.DashJS, "application/javascript; charset=utf-8")
 		return
 	}
 	switch {
