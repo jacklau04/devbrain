@@ -128,6 +128,7 @@ You stay the only `nightshift → main` gate.
 
 - [`DESIGN.md`](DESIGN.md) — architecture, the TODO queue, and the golden rule (never lose the log)
 - [`SECURITY.md`](SECURITY.md) — what's captured, where it's stored, who can see it, and how to report a vuln
+- [`docs/privacy.md`](docs/privacy.md) — hands-on: what an entry looks like, redaction gaps, and how to delete/disable/audit your data
 - [`CHANGELOG.md`](CHANGELOG.md) — release history
 - `make test` — run the full suite
 - Ranked + semantic brain search comes from the optional gbrain engine; opt in with `devbrain install --install-deps` (the offline `devbrain brain search` still works without it).
