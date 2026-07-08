@@ -9,7 +9,8 @@ names, URLs, exact task identifiers, and any prompt contents.
 The core workflow is useful: a long-lived queue, a dashboard, and an overnight
 worker fleet make it possible to hand off repo maintenance work and review one
 aggregate result later. The rough edges below came from the control plane around
-pausing, provider limits, task dedupe, and project targeting.
+pausing, provider limits, task dedupe, project targeting, context catch-up, and
+local upgrade diagnostics.
 
 ## Observed experience
 
@@ -49,6 +50,19 @@ pausing, provider limits, task dedupe, and project targeting.
    historical backfill. A first-class "catch up latest context" mode would reduce
    ambiguity and make ledger advancement safer.
 
+7. **Missing-data checks were hard to reason about.**
+   Capture hooks were healthy and raw logs existed, but the visible state still
+   looked like missing data because the agent was initially scoped to a different
+   project and the distill/search index had not caught up. Operators need a
+   concise diagnosis that separates capture health, project routing, distill
+   ledger position, and search-index freshness.
+
+8. **Brew upgrade failed in a non-obvious way.**
+   The installed binary was behind the current release, but Brew could not inspect
+   or upgrade cleanly because the local tap formula contained unresolved
+   merge-conflict markers. That made "install latest with Brew" look like an
+   application issue rather than a local tap integrity issue.
+
 ## Suggested improvements
 
 - Detect repeated provider-limit or authentication-limit failures and pause the
@@ -66,6 +80,16 @@ pausing, provider limits, task dedupe, and project targeting.
   in the ledger.
 - Surface a dashboard callout when the fleet is paused due to provider limits:
   what happened, when it can be retried if known, and which command resumes it.
+- Add a data-diagnosis command or dashboard panel that shows capture-hook health,
+  the current project key, raw log presence and newest raw log time, the distill
+  ledger cursor, and gbrain source/sync freshness.
+- Warn when the dashboard-selected project and the current-working-directory
+  project differ before queue, distill, or nightshift operations run.
+- Add an install doctor check that detects a conflicted or dirty Brew tap formula
+  before upgrade, and tells the operator to repair the tap before retrying.
+- When `brew info` or `brew upgrade` fails because the formula is syntactically
+  invalid, surface that as a local tap integrity problem instead of a generic
+  upgrade failure.
 
 ## Why this matters
 
