@@ -96,7 +96,7 @@ func ParseArgs(args []string) (Options, error) {
 			o.Workers, err = num("--workers")
 		case "--tmux":
 			o.Mode = "tmux"
-		case "--headless":
+		case "--headless", "--claude":
 			o.Mode = "headless"
 		case "--codex":
 			o.Mode = "codex"

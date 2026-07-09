@@ -42,8 +42,9 @@ Run it through the devbrain CLI:  devbrain nightshift <verb>
   stop                      stop the fleet + dashboard
 
 Backends — how each worker runs (chosen at start):
-  headless  (DEFAULT) — one claude -p per turn. The process IS the turn: simplest and
-            most robust. Runs under your Claude Code subscription. Use this.
+  automatic (DEFAULT) — Codex when started from a Codex session; Claude otherwise.
+  --claude / --headless — one claude -p per turn. The process IS the turn: simplest
+            and most robust. Runs under your Claude Code subscription.
   --codex   — one codex exec turn per worker. Uses the same process-backed
             lifecycle as headless mode, but runs Codex instead of Claude.
   --tmux    (fallback) — persistent interactive sessions you can attach + steer.
@@ -111,6 +112,13 @@ func orchAlive(repo string) bool {
 	return legacyOrchAlive(repo)
 }
 
+func inferredStartMode() string {
+	if os.Getenv("CODEX_THREAD_ID") != "" || os.Getenv("CODEX_WORKING_DIR") != "" {
+		return "codex"
+	}
+	return "headless"
+}
+
 func cliStart(args []string, stdout, stderr io.Writer) int {
 	repoArg, rest := splitRepoArg(args)
 	repo := ResolveRepo(repoArg)
@@ -119,16 +127,17 @@ func cliStart(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	SaveRepo(repo)
-	mode, watch := "headless", true
+	mode, watch := "", true
+	autoSelected := false
 	var oargs []string
 	for _, a := range rest {
 		switch a {
 		case "--tmux":
 			mode = "tmux"
 			oargs = append(oargs, a)
-		case "--headless":
+		case "--headless", "--claude":
 			mode = "headless"
-			oargs = append(oargs, a)
+			oargs = append(oargs, "--headless")
 		case "--codex":
 			mode = "codex"
 			oargs = append(oargs, a)
@@ -138,6 +147,13 @@ func cliStart(args []string, stdout, stderr io.Writer) int {
 			watch = true
 		default:
 			oargs = append(oargs, a)
+		}
+	}
+	if mode == "" {
+		mode = inferredStartMode()
+		autoSelected = true
+		if mode == "codex" {
+			oargs = append(oargs, "--codex")
 		}
 	}
 	if orchAlive(repo) {
@@ -187,7 +203,11 @@ func cliStart(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "   why --tmux (the fallback): kept for ONE case — a future claude -p pricing change.")
 		fmt.Fprintln(stdout, "   (bonus: devbrain nightshift attach <i> to watch/steer a worker live.)")
 	case "codex":
-		fmt.Fprintf(stdout, "🌙 nightshift started on %s  ·  backend: codex exec\n", repo)
+		auto := ""
+		if autoSelected {
+			auto = " (auto-selected from Codex session)"
+		}
+		fmt.Fprintf(stdout, "🌙 nightshift started on %s  ·  backend: codex exec%s\n", repo, auto)
 		fmt.Fprintln(stdout, "   why codex: each turn is one codex exec process with the same queue scope,")
 		fmt.Fprintln(stdout, "      worktree lifecycle, merge gate, and dashboard tracking as headless mode.")
 	default:
@@ -503,7 +523,7 @@ func cliTmuxVerb(verb string, args []string, stdout, stderr io.Writer) int {
 		if verb == "say" {
 			fmt.Fprintf(stderr, "no tmux session %s — say/attach work only with the --tmux backend\n", sess)
 		} else {
-			fmt.Fprintf(stderr, "no tmux session %s — attach works only with the --tmux backend (default is headless claude -p)\n", sess)
+			fmt.Fprintf(stderr, "no tmux session %s — attach works only with the explicit --tmux backend\n", sess)
 		}
 		return 1
 	}

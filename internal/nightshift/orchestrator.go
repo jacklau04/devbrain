@@ -15,7 +15,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,10 +25,6 @@ import (
 	"github.com/TheWeiHu/devbrain/internal/nightshift/plan"
 	"github.com/TheWeiHu/devbrain/internal/procutil"
 )
-
-// limitRe spots a usage limit in a finished turn's log (headless replaces
-// pane-scraping with log-grepping).
-var limitRe = regexp.MustCompile(`(?i)usage limit|limit reached|out of .*credit|quota|resets? (at|in)`)
 
 // worker is the coordinator's view of one worker slot.
 type worker struct {
@@ -57,21 +52,21 @@ type turnCommand struct {
 // Runner drives the fleet. Built on Orch (options + git handles).
 type Runner struct {
 	*Orch
-	workers []worker
-	desired int // live worker-count target (re-read from desired-workers each tick)
-	done    chan turnDone
-	turns   int // TURNS_DONE
-	noMerge int // NOMERGE
-	stalled bool
-	baseRed bool
-	limit   bool // LIMIT_HIT
-	planned time.Time
+	workers    []worker
+	desired    int // live worker-count target (re-read from desired-workers each tick)
+	done       chan turnDone
+	turns      int // TURNS_DONE
+	noMerge    int // NOMERGE
+	stalled    bool
+	baseRed    bool
+	limitUntil time.Time
+	planned    time.Time
 	// fixed-set completion bookkeeping
 	fsReopened map[string]bool
 	idleTicks  int  // fixed-set watchdog: consecutive ticks with no worker in flight
 	wdRecov    bool // watchdog: a recovery attempt has been spent this idle episode
 	cleanupOn  sync.Once
-	tmux       *tmuxBackend // nil in headless mode
+	tmux       *tmuxBackend // nil in process-backed modes
 	runID      string       // this run's identity (orchestrator PID), stamped into each worktree
 }
 
@@ -241,8 +236,14 @@ func (r *Runner) harvest(ev turnDone) {
 	os.Remove(filepath.Join(w.wt, ".nightshift", "turn.pid"))
 	r.turns++
 	r.logf("orch: worker %d finished a turn rc=%d (total turns: %d)", ev.i, ev.rc, r.turns)
-	if b, err := os.ReadFile(w.logPath); err == nil && limitRe.Match(b) {
-		r.limit = true
+	limited := false
+	if b, err := os.ReadFile(w.logPath); err == nil {
+		sig := detectUsageLimit(string(b), ev.rc, time.Now(), time.Duration(r.Opt.LimitBackoff)*time.Second)
+		limited = sig.limited
+		if sig.limited && sig.until.After(r.limitUntil) {
+			r.limitUntil = sig.until
+			r.logf("orch: usage limit detected — pausing new %s turns until %s", r.Opt.Mode, sig.until.Format("2006-01-02 15:04 MST"))
+		}
 	}
 	if ev.timedOut {
 		r.logf("orch: worker %d turn TIMED OUT after %ds — discarding its branch + releasing its task", ev.i, r.Opt.TurnMax)
@@ -252,9 +253,13 @@ func (r *Runner) harvest(ev turnDone) {
 	}
 	if r.HarvestBranch(w.wt, w.turnBase) {
 		r.noMerge = 0
-	} else {
+	} else if !limited {
 		r.noMerge++
 	}
+}
+
+func (r *Runner) rateLimited(now time.Time) bool {
+	return !r.limitUntil.IsZero() && now.Before(r.limitUntil)
 }
 
 // activeIDs lists the tasks currently owned by a LIVE worker turn.
@@ -337,8 +342,8 @@ func (r *Runner) workerCap(oc, unresolved int) int {
 // .nightshift/desired-workers (re-read each tick, like only.txt). GROWS by
 // prepping new worktree slots; SHRINKS by letting each in-flight turn finish,
 // then dropping trailing idle slots and clearing their run stamp so the
-// dashboard hides them. Clamped to [1, workerCap]. Coordinator-only; headless
-// only (tmux sizes its sessions once at spawn).
+// dashboard hides them. Clamped to [1, workerCap]. Coordinator-only;
+// process-backed modes only (tmux sizes its sessions once at spawn).
 func (r *Runner) resizeWorkers(oc, unresolved int) {
 	if r.tmux != nil {
 		return
@@ -379,7 +384,7 @@ func (r *Runner) cleanup() {
 		if r.Opt.FixedSet {
 			r.Unfence()
 		}
-		if r.tmux == nil { // headless only: tmux sessions stay alive for inspection
+		if r.tmux == nil { // process backends exit per turn; tmux stays alive for inspection
 			r.logf("orch: shutting down — reaping in-flight turns + releasing their claimed tasks")
 			for i := range r.workers {
 				w := &r.workers[i]
@@ -486,7 +491,7 @@ func (r *Runner) Run() int {
 	// leftover count can't silently rescale this run at its first tick.
 	os.WriteFile(opt.DesiredWorkersFile(), []byte(strconv.Itoa(opt.Workers)+"\n"), 0o644)
 	// Advertise the backend so the dashboard scale API can reject tmux fleets
-	// (resizeWorkers is headless-only) instead of accepting a no-op scale.
+	// (resizeWorkers is process-backend-only) instead of accepting a no-op scale.
 	os.WriteFile(opt.ModeFile(), []byte(mode+"\n"), 0o644)
 	if mode == "tmux" {
 		r.tmux = newTmuxBackend(r)
@@ -542,6 +547,12 @@ func (r *Runner) Run() int {
 				drain = false
 			}
 		}
+		now = time.Now()
+		paused := r.rateLimited(now)
+		if !r.limitUntil.IsZero() && !paused {
+			r.logf("orch: usage-limit pause expired — resuming %s workers", opt.Mode)
+			r.limitUntil = time.Time{}
+		}
 
 		oc := r.openCount()
 		unresolved := 0
@@ -595,6 +606,9 @@ func (r *Runner) Run() int {
 				r.tmux.step(i, &assigned, oc)
 				continue
 			}
+			if paused {
+				continue
+			}
 			if i >= r.desired {
 				continue // slot retired by a live downscale — don't relaunch it
 			}
@@ -623,7 +637,7 @@ func (r *Runner) Run() int {
 		}
 
 		// convergence: K turns with no new merge while open work remains
-		if !r.stalled && r.noMerge >= opt.StallK && oc > 0 {
+		if !paused && !r.stalled && r.noMerge >= opt.StallK && oc > 0 {
 			held := 0
 			out, _ := r.todo("list")
 			for _, id := range listIDsLoose(out) {
@@ -646,7 +660,7 @@ func (r *Runner) Run() int {
 		// escalated recovery first; if still wedged, break so cleanup() releases
 		// claims + removes the pidfile and the dashboard's live indicator clears.
 		wedged := false
-		switch r.watchdogCheck(opt.FixedSet, r.anyRunning()) {
+		switch r.watchdogCheck(opt.FixedSet, r.anyRunning() || paused) {
 		case wdRecover:
 			r.watchdogRecover()
 		case wdExit:
@@ -657,12 +671,14 @@ func (r *Runner) Run() int {
 			break
 		}
 
-		// pacing: back off on a usage limit; otherwise the normal poll
+		// A process-backed usage limit pauses assignment until the provider's
+		// stated reset. In-flight workers may still finish and wake this select.
 		delay := time.Duration(opt.Poll) * time.Second
-		if r.tmux == nil && r.limit {
-			r.logf("orch: ⏳ usage limit hit — backing off %ds before the next turn", opt.LimitBackoff)
-			r.limit = false
-			delay = time.Duration(opt.LimitBackoff) * time.Second
+		if r.tmux == nil && paused {
+			delay = time.Until(r.limitUntil)
+			if delay < time.Duration(opt.Poll)*time.Second {
+				delay = time.Duration(opt.Poll) * time.Second
+			}
 		} else if r.tmux != nil && r.tmux.usageLimited() {
 			r.logf("orch: ⏳ usage limit detected — backing off %ds (ping ~every 5 min until reset)", opt.LimitBackoff)
 			delay = time.Duration(opt.LimitBackoff) * time.Second

@@ -117,12 +117,14 @@ PR merges. Agents without slash commands run the same workflows as skills (`$dis
 
 ## nightshift
 
-Runs several `claude` workers in parallel against the queue, each in its own worktree,
-grounded in current project memory, auto-merging green work onto a throwaway `nightshift`
-branch — you wake to one `git diff main...nightshift`.
+Runs several Claude or Codex workers in parallel against the queue, each in its own
+worktree, grounded in current project memory, auto-merging green work onto a throwaway
+`nightshift` branch — you wake to one `git diff main...nightshift`. The launching agent
+is selected automatically; `--claude` and `--codex` are explicit overrides.
 
 ```bash
 devbrain nightshift start ~/nightshift/myrepo   # launch the fleet (runs until stopped)
+devbrain nightshift start ~/nightshift/myrepo --codex   # explicitly use Codex workers
 devbrain nightshift watch                       # live browser dashboard
 devbrain nightshift stop                        # stop the fleet
 ```

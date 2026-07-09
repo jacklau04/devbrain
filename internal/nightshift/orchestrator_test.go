@@ -128,10 +128,18 @@ func TestBuildTurnCommandHeadlessClaude(t *testing.T) {
 	}
 }
 
-// One full headless turn end-to-end: a stub `claude` claims the task, commits
-// on a todo/ branch, pushes it, and exits — the orchestrator must gate-free
-// merge it into nightshift and mark the task done, then hit --max-turns.
 func TestHeadlessTurnEndToEnd(t *testing.T) {
+	testProcessTurnEndToEnd(t, "headless", "claude")
+}
+
+func TestCodexTurnEndToEnd(t *testing.T) {
+	testProcessTurnEndToEnd(t, "codex", "codex")
+}
+
+// testProcessTurnEndToEnd proves both non-interactive providers share the full
+// worktree, queue, push, harvest, merge, close, and cleanup lifecycle.
+func testProcessTurnEndToEnd(t *testing.T, mode, binary string) {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("integration")
 	}
@@ -153,7 +161,7 @@ func TestHeadlessTurnEndToEnd(t *testing.T) {
 	os.WriteFile(filepath.Join(todoDir, "0001-do-it.md"),
 		[]byte("---\nid: 0001-do-it\nstatus: open\npriority: 50\ncreated: 2026-07-01T00:00:00Z\nclaimed_by:\nclaimed_at:\npr:\n---\n\n# Do it\n"), 0o644)
 
-	// stub claude: from its worktree cwd, branch, commit a file, push
+	// Provider stub: from its worktree cwd, branch, commit a file, and push.
 	binDir := filepath.Join(root, "bin")
 	os.MkdirAll(binDir, 0o755)
 	stub := `#!/bin/sh
@@ -164,12 +172,16 @@ git -c user.name=w -c user.email=w@w commit -qm "do it"
 git push -q origin todo/0001-do-it
 exit 0
 `
-	os.WriteFile(filepath.Join(binDir, "claude"), []byte(stub), 0o755)
+	os.WriteFile(filepath.Join(binDir, binary), []byte(stub), 0o755)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("NIGHTSHIFT_TEST_NO_LAUNCH", "1")
 
-	opt, err := ParseArgs([]string{"--repo", base, "--workers", "1", "--poll", "1",
-		"--max-turns", "1", "--no-gate", "--turn-timeout", "60"})
+	args := []string{"--repo", base, "--workers", "1", "--poll", "1",
+		"--max-turns", "1", "--no-gate", "--turn-timeout", "60"}
+	if mode == "codex" {
+		args = append(args, "--codex")
+	}
+	opt, err := ParseArgs(args)
 	if err != nil {
 		t.Fatal(err)
 	}

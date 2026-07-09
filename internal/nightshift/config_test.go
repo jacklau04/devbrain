@@ -76,6 +76,32 @@ func TestParseCodexMode(t *testing.T) {
 	}
 }
 
+func TestParseClaudeAlias(t *testing.T) {
+	o, err := ParseArgs([]string{"--repo", "/r", "--codex", "--claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Mode != "headless" {
+		t.Fatalf("Mode = %q want headless", o.Mode)
+	}
+}
+
+func TestInferredStartMode(t *testing.T) {
+	t.Setenv("CODEX_THREAD_ID", "thread-1")
+	t.Setenv("CODEX_WORKING_DIR", "")
+	if got := inferredStartMode(); got != "codex" {
+		t.Fatalf("Codex session mode = %q", got)
+	}
+	t.Setenv("CODEX_THREAD_ID", "")
+	if got := inferredStartMode(); got != "headless" {
+		t.Fatalf("plain shell mode = %q", got)
+	}
+	t.Setenv("CODEX_WORKING_DIR", "/repo")
+	if got := inferredStartMode(); got != "codex" {
+		t.Fatalf("Codex working-dir mode = %q", got)
+	}
+}
+
 func TestDerivedPaths(t *testing.T) {
 	o := DefaultOptions()
 	o.Repo = "/x/repo"
