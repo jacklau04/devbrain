@@ -92,7 +92,10 @@ func TestDiscoveryAndSort(t *testing.T) {
 	t.Parallel()
 	q := newTestQueue(t)
 	seedThree(t, q)
-	if got := q.Projects(); !reflect.DeepEqual(got, []string{"proj__a", "proj__b"}) {
+	if err := os.MkdirAll(filepath.Join(q.Data, "projects", "proj__logs-only", "log"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := q.Projects(); !reflect.DeepEqual(got, []string{"proj__a", "proj__b", "proj__logs-only"}) {
 		t.Errorf("Projects() = %v", got)
 	}
 	tasks := q.AllTasks()

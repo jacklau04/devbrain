@@ -127,13 +127,14 @@ func (q *Queue) nowStamp() string {
 
 func (q *Queue) projectsDir() string { return filepath.Join(q.Data, "projects") }
 
-// Projects lists every project that has a todo/ dir, sorted.
+// Projects lists every project data directory, sorted. Prompt/token-only projects
+// belong in the dashboard even when they do not have a TODO queue yet.
 func (q *Queue) Projects() []string {
-	matches, _ := filepath.Glob(filepath.Join(q.projectsDir(), "*", "todo"))
 	out := []string{}
-	for _, d := range matches {
-		if fi, err := os.Stat(d); err == nil && fi.IsDir() {
-			out = append(out, filepath.Base(filepath.Dir(d)))
+	entries, _ := os.ReadDir(q.projectsDir())
+	for _, entry := range entries {
+		if entry.IsDir() {
+			out = append(out, entry.Name())
 		}
 	}
 	sort.Strings(out)

@@ -1,6 +1,7 @@
 const LABEL = {open:"Open",taken:"Taken",review:"Review",held:"Held",done:"Done"};
 const WIP = {taken:5, review:3};                 // per-column work-in-progress limits (bar turns red over)
 let DATA = {tasks:[],projects:[],statuses:[]}, EDIT = null, grab = null;
+const REQUESTED_PROJECT = new URLSearchParams(location.search).get("project")||"";
 const SEL = new Set();   // "project|id" of tasks picked for a 🌙 fixed-set nightshift run
 let dragSel = null;      // tasks being dragged toward the moon (the selection, or a single card)
 const selKey = t => t.project+"|"+t.id;
@@ -48,8 +49,10 @@ async function load(){
     + (noOpen.length ? `<optgroup label="other">${noOpen.map(opt).join("")}</optgroup>` : "")
     + misc.map(opt).join("")
     + '<option value="">all projects</option>';
-  fp.value = firstLoad ? (ordered[0]||"") : cur;
+  const wanted=firstLoad ? REQUESTED_PROJECT : cur;
+  fp.value = (wanted===""||ordered.includes(wanted)) ? wanted : (ordered[0]||"");
   firstLoad=false;
+  window.refreshProfile?.();
   const who=[...new Set(DATA.tasks.map(t=>t.claimed_by).filter(Boolean))].sort();
   const fa=$("#filterAssignee"), curA=fa.value;
   fa.innerHTML = '<option value="">anyone</option>'+who.map(w=>`<option>${esc(w)}</option>`).join("");
@@ -88,6 +91,7 @@ function render(){
     board.appendChild(c);
   }
 }
+
 // Held: collapse repeated parked reasons into one collapsible group each; singletons stay plain cards.
 function renderHeld(drop,list){
   if(!list.length){ drop.innerHTML='<div class="empty">—</div>'; return; }
@@ -268,22 +272,25 @@ function setView(v){
   // swap navbar controls: board's filters vs the profile's filters
   const prof = v==="profile";
   document.querySelector(".search").style.display = prof ? "none" : "";
-  for(const id of ["filterProject","filterAssignee","newBtn"]) $("#"+id).style.display = prof ? "none" : "";
+  $("#filterProject").style.display=""; // project scope applies to Board, Profile, and Nightshift
+  for(const id of ["filterAssignee","newBtn"]) $("#"+id).style.display = prof ? "none" : "";
   $("#pf-controls").style.display = prof ? "inline-flex" : "none";
   if(v==="monitor") renderMonitor();
   if(v==="profile") openProfile();
 }
 function renderMonitor(){
   const m=$("#monitor");
-  if(!NS.runs.length){
+  const selected=$("#filterProject").value;
+  const scopedRuns=NS.runs.filter(r=>!selected||r.project===selected);
+  if(!scopedRuns.length){
     // Just launched? Show a booting state until the fleet registers (takes a few seconds to
     // spin up workers + write status.json), so a drop visibly "does something" right away.
     if(NS_STARTING) m.innerHTML=`<div class="ns-boot"><span class="ns-spin"></span>Starting nightshift on ${NS_STARTING.count} task${NS_STARTING.count>1?"s":""}…<div class="ns-boot-sub">spinning up workers in <code>${esc(NS_STARTING.repo||"")}</code> — the monitor will fill in shortly</div></div>`;
-    else m.innerHTML='<div class="empty">no nightshift runs active</div>';
+    else m.innerHTML=`<div class="empty">${selected?'no nightshift runs for this project':'no nightshift runs active'}</div>`;
     return;
   }
   // running fleets first, then stopped — stable sort keeps each group alphabetical (server order)
-  const runs=NS.runs.slice().sort((a,b)=>(b.running?1:0)-(a.running?1:0));
+  const runs=scopedRuns.slice().sort((a,b)=>(b.running?1:0)-(a.running?1:0));
   m.innerHTML = runs.map(fleet).join("");
   runs.forEach((r,i)=>{ const c=document.getElementById("ns-chart-"+i); if(c) drawChart(c, r.history||[]); });
   m.querySelectorAll(".ns-stop").forEach(b=>b.onclick=()=>stopFleet(b));
@@ -409,7 +416,10 @@ addEventListener("load",()=>{ const h=(location.hash||"").slice(1);
 setInterval(checkNS, 5000);
 $("#newBtn").onclick=openCreate;
 $("#saveBtn").onclick=saveModal; $("#cancelBtn").onclick=close; $("#deleteBtn").onclick=del;
-$("#filterProject").onchange=render; $("#filterAssignee").onchange=render; $("#search").oninput=render;
+$("#filterProject").onchange=()=>{ const project=$("#filterProject").value,u=new URL(location.href);
+  project?u.searchParams.set("project",project):u.searchParams.delete("project"); history.replaceState(null,"",u);
+  render(); window.refreshProfile?.(); if(VIEW==="monitor")renderMonitor(); };
+$("#filterAssignee").onchange=render; $("#search").oninput=render;
 $("#modal").onclick=e=>{if(e.target.id==="modal")close();};
 
 // ── 🌙 moon: drop selected tasks here (or click) to start a fixed-set nightshift run ──
@@ -551,7 +561,7 @@ const STOP_DENY="yup yep yeah nope gonna wanna lemme dunno pls plz lol idk imo b
 const STOP_KEEP=new Set("fix test html open opened state".split(/\s+/));
 const STOP=new Set([...STOP_BASE.split(/\s+/), ...STOP_DENY.split(/\s+/)].filter(w=>!STOP_KEEP.has(w)));
 const TYPED=new Set(['human','command']);   // "you, at the keyboard"
-let ALL=[],GB=[],TOK=[],P=[],N=0,WORDS=[],LOADED=false,KIND='typed',LENUNIT='words';
+let ALL=[],GB=[],TOK=[],P=[],N=0,WORDS=[],LOADED=false,KIND='typed',LENUNIT='words',PROJECTUNIT='prompts',TIMEBIN='auto';
 // Per-model standard-API $/1M-token rates
 // [input, output, cache_create_5m, cache_read, cache_create_1h,
 // long_input_multiplier, long_output_multiplier]. The table lives in
@@ -589,9 +599,11 @@ function modelColor(m){m=canonicalModel(m);const named={'gpt-5.6-sol':'#34d399',
   if(named[m])return named[m];let h=0;for(const c of m)h=(h*31+c.charCodeAt(0))>>>0;return STC[h%STC.length];}
 function tokTotal(r){ return (r.in||0)+(r.out||0)+(r.cc||0)+(r.cr||0); }
 function tokBillable(r){ return r.model!=='<synthetic>'; }
+function projectVisible(r){ const p=$('filterProject').value; return !p||r.p===p; }
 // honor the typed/bot/all toggle: r.auto = autonomous (nightshift) turn vs your interactive
 // one. typed = your spend, bot = the fleet's. <synthetic> (local, non-API) never counts.
 function tokVisible(r){ return tokBillable(r) && (KIND==='all' || (KIND==='bot' ? !!r.auto : !r.auto)); }
+function tokInScope(r){ return projectVisible(r) && tokVisible(r); }
 // Cap a lollipop's scroll wrapper to ~`visible` rows; the rest scrolls. The svg scales
 // to width, so clip the wrapper to the matching fraction of its rendered height.
 function capScroll(svgId, total, visible){ const svg=$(svgId), wrap=svg&&svg.parentElement;
@@ -732,6 +744,9 @@ window.openProfile=async function(){
   document.querySelectorAll('#pf-range button').forEach(b=>b.onclick=()=>setRange(+b.dataset.d,b));
   document.querySelectorAll('#pf-len-unit button').forEach(b=>b.onclick=()=>{LENUNIT=b.dataset.u;
     document.querySelectorAll('#pf-len-unit button').forEach(x=>x.classList.toggle('on',x===b)); chLen(); chPromptLen();});
+  document.querySelectorAll('#pf-project-unit button').forEach(b=>b.onclick=()=>{PROJECTUNIT=b.dataset.u;
+    document.querySelectorAll('#pf-project-unit button').forEach(x=>x.classList.toggle('on',x===b)); chProj(); chProjTime(); matchAttnHeight();});
+  $('pf-bin').onchange=()=>{TIMEBIN=$('pf-bin').value; chProjTime(); chSkills();};
   from.onchange=to.onchange=()=>{ markRange(null); applyFilters(); };
   // Re-match the attention chart to the tone chart when the layout reflows.
   let rt; window.addEventListener('resize',()=>{ clearTimeout(rt); rt=setTimeout(()=>{ if($('profile').style.display!=='none'){ matchAttnHeight(); matchGbHeight(); } },120); });
@@ -750,9 +765,11 @@ function setKind(k){
   document.querySelectorAll('#pf-kind button').forEach(b=>b.classList.toggle('on',b.dataset.k===k));
   applyFilters();
 }
+function timeBinDays(spanD){ const n=Number(TIMEBIN); return n>0?n:(spanD<=45?1:spanD<=120?7:spanD<=540?28:90); }
+function timeBinLabel(days){ return days===1?'daily':days===7?'weekly':days===28?'4-week':'quarterly'; }
 function applyFilters(){
   const from=$('pf-from').value, to=$('pf-to').value;
-  const win=ALL.filter(p=>(!from||p.date>=from)&&(!to||p.date<=to));
+  const win=ALL.filter(p=>projectVisible(p)&&(!from||p.date>=from)&&(!to||p.date<=to));
   const typed=win.filter(p=>TYPED.has(p.kind)).length;
   P = KIND==='all'?win : KIND==='bot'?win.filter(p=>!TYPED.has(p.kind)) : win.filter(p=>TYPED.has(p.kind));
   N=P.length;
@@ -763,6 +780,7 @@ function applyFilters(){
   matchAttnHeight();   // after chTone so its svg is measurable
   matchGbHeight();     // after chGbrain so the term cloud beside it is measurable
 }
+window.refreshProfile=()=>{ if(LOADED) applyFilters(); };
 // Tokens of a gbrain query string, with the <owner>__ slug prefix stripped (routing
 // noise). Shared by the term cloud and its click-through so their counts always match.
 function gbToks(q){ return (q.toLowerCase().replace(/[a-z0-9.\-]+__/g,'').match(/[a-z][a-z'+\-]{2,}/g)||[]); }
@@ -770,7 +788,7 @@ function gbToks(q){ return (q.toLowerCase().replace(/[a-z0-9.\-]+__/g,'').match(
 // terms you search the brain for (click a term -> your prompts that mention it).
 function chGbrain(){
   const from=$('pf-from').value, to=$('pf-to').value;
-  const g=GB.filter(r=>(!from||r.date>=from)&&(!to||r.date<=to));
+  const g=GB.filter(r=>projectVisible(r)&&gbKind(r)&&(!from||r.date>=from)&&(!to||r.date<=to));
   const reads=g.filter(r=>r.read), withHits=reads.filter(r=>r.hits>0).length;
   const rate=reads.length?Math.round(100*withHits/reads.length):0;
   // Card 1 — pages surfaced (the brain's MVPs)
@@ -804,14 +822,14 @@ function chGbrain(){
     box.appendChild(s); });
 }
 // Token Cost card — two lollipop panels over the date window: $ spend by project (the
-// "where is the money going" view) and token share by model (the mix that drives cost).
+// "where is the money going" view) and spend by model (with turn/session volume in tooltips).
 // Reads the tokens.jsonl sidecar via /api/tokens; cost is a standard-API USD equivalent,
 // not necessarily a subscription invoice. Honors the typed/bot/all toggle via tokVisible: typed = your
 // interactive spend, bot = the nightshift fleet's, all = both.
 const usd=v=>v>=100?'$'+Math.round(v):v>=10?'$'+v.toFixed(1):'$'+v.toFixed(2);
 function chCost(){
   const from=$('pf-from').value, to=$('pf-to').value;
-  const t=TOK.filter(r=>(!from||r.date>=from)&&(!to||r.date<=to)&&tokVisible(r));
+  const t=TOK.filter(r=>(!from||r.date>=from)&&(!to||r.date<=to)&&tokInScope(r));
   const cs=$('pf-s-cost'), ms=$('pf-s-model');
   if(!t.length){ [cs,ms].forEach(s=>{s.innerHTML='';s.setAttribute('viewBox','0 0 520 40');s.appendChild(txt(8,24,'no token data in this window — logged from new turns + import backfill',{'font-size':11,fill:'var(--muted)'}));}); $('pf-c-cost').textContent=''; $('pf-c-cost').title=''; $('pf-c-costm').textContent=''; return; }
   // Break spend down by kind: output is the driver; cache_read is huge in volume but
@@ -844,12 +862,14 @@ function chCost(){
     title:`${sp(name)} — ${usd(v)}`})), {autoL:130,rh:22,rpad:56,fmt:usd});
   capScroll('pf-s-cost', pr.length, 7);
   // $ by model — bar ∝ spend, the model mix is what drives cost; tokens in the tooltip
-  const byM={},byMt={},byMc={},byMi={}; t.forEach(r=>{const raw=r.model||'unknown',m=canonicalModel(raw);
+  const byM={},byMt={},byMc={},byMi={},byMn={},byMs={},byFirst={},byLast={}; t.forEach(r=>{const raw=r.model||'unknown',m=canonicalModel(raw);
     byM[m]=(byM[m]||0)+tokCost(r); byMt[m]=(byMt[m]||0)+(r.in||0)+(r.out||0);
+    byMn[m]=(byMn[m]||0)+1;(byMs[m]||(byMs[m]=new Set())).add(r.session||r.turn||'?');
+    if(!byFirst[m]||r.date<byFirst[m])byFirst[m]=r.date;if(!byLast[m]||r.date>byLast[m])byLast[m]=r.date;
     (byMi[m]||(byMi[m]=new Set())).add(raw);const c=tokCreditCost(r);if(c!==null)byMc[m]=(byMc[m]||0)+c;});
   const mr=Object.entries(byM).sort((a,b)=>b[1]-a[1]);
-  lollipops('pf-s-model', mr.map(([m,v])=>({label:modelDisplay(m),value:v,color:modelColor(m),
-    title:`${modelDisplay(m)} (${[...byMi[m]].join(', ')}) — ${usd(v)} API-equiv.${byMc[m]!=null?' · ~'+kfmt(byMc[m])+' Codex credits':''} · ${kfmt(byMt[m])} non-cache tok`})), {autoL:220,rh:22,rpad:56,fmt:usd});
+  lollipops('pf-s-model', mr.map(([m,v])=>({label:`${modelDisplay(m)} · ${byMn[m]}t`,value:v,color:modelColor(m),
+    title:`${modelDisplay(m)} (${[...byMi[m]].join(', ')}) — ${usd(v)} API-equiv. · ${byMn[m]} turns · ${byMs[m].size} sessions · ${byFirst[m]} to ${byLast[m]} · ${kfmt(byMt[m])} non-cache tok${byMc[m]!=null?' · ~'+kfmt(byMc[m])+' Codex credits':''}`})), {autoL:220,rh:22,rpad:56,fmt:usd});
   capScroll('pf-s-model', mr.length, 7);
 }
 
@@ -868,7 +888,7 @@ const SPEND_KINDS=[   // bottom→top; cache-read + cache-write adjacent so thei
 ];
 function chSpendComp(){
   const from=$('pf-from').value, to=$('pf-to').value;
-  const t=TOK.filter(r=>(!from||r.date>=from)&&(!to||r.date<=to)&&tokVisible(r));
+  const t=TOK.filter(r=>(!from||r.date>=from)&&(!to||r.date<=to)&&tokInScope(r));
   const svg=$('pf-s-cacheshare'); svg.innerHTML='';
   if(!t.length){ svg.setAttribute('viewBox','0 0 1080 40'); svg.appendChild(txt(8,24,'no token data in this window',{'font-size':11,fill:'var(--muted)'})); $('pf-c-cacheshare').textContent=''; return; }
   const day={};   // per local day: $ per cost kind
@@ -924,7 +944,7 @@ function chSpendComp(){
 // eye follows outliers, not repeated project labels — which is what the old lollipop couldn't do.
 function chCacheTurn(){
   const from=$('pf-from').value, to=$('pf-to').value;
-  const t=TOK.filter(r=>(!from||r.date>=from)&&(!to||r.date<=to)&&tokVisible(r));
+  const t=TOK.filter(r=>(!from||r.date>=from)&&(!to||r.date<=to)&&tokInScope(r));
   const svg=$('pf-s-cacheturn'); svg.innerHTML='';
   const blank=m=>{svg.setAttribute('viewBox','0 0 1080 40');svg.appendChild(txt(8,24,m,{'font-size':11,fill:'var(--muted)'}));$('pf-c-cacheturn').textContent='';};
   if(!t.length){ blank('no token data in this window'); return; }
@@ -973,7 +993,7 @@ function chCacheTurn(){
 // right-hand panel — the log, cleanly, so a dot in the danger corner is explainable. Prompts
 // carry s="<worktree>.<session-uuid>"; the dot's sid is that uuid.
 function selectSession(sid,proj,n,per){clearSel();
-  const list=ALL.filter(p=>p.s&&p.s.endsWith('.'+sid));
+  const list=ALL.filter(p=>p.p===proj&&p.s&&p.s.endsWith('.'+sid));
   const title=`Session · ${sp(proj)} · ${n}t · ${usd(per)}/t`;
   CURRENT={mode:'list',title,list,color:'var(--review)'}; renderPanel();
   if(!list.length) $('pf-list').innerHTML='<div class="hint">This session has token usage but no prompt log — a nightshift or dead-worktree turn captured by import, so there is nothing to read here.</div>';
@@ -984,8 +1004,10 @@ function selectSession(sid,proj,n,per){clearSel();
 // session). gbSq is a real SEARCH/QUERY — a bare `get` is a hit by definition, so it's
 // excluded from the rate denominators.
 const gbKind=r=>KIND==='all'||(KIND==='bot'?!!r.auto:!r.auto);
-const gbSq=r=>gbKind(r)&&(r.modes||[]).some(m=>m==='search'||m==='query');
-// A search is USEFUL when the agent read one of the pages it surfaced soon after — a
+const gbVisible=r=>projectVisible(r)&&gbKind(r);
+const gbSq=r=>gbVisible(r)&&(r.modes||[]).some(m=>m==='search'||m==='query');
+// A query is useful when it returned context: its output is already the synthesized read.
+// A plain search is useful when the agent then read one of the pages it surfaced — a
 // subsequent `get` (same project) of a surfaced slug within this window. Fold both
 // sides to the canonical <project>/<page> slug first: the surfaced slug and the get
 // target can disagree in spelling (projects/<p>/brain/<page> vs <p>/<page>) for the
@@ -998,18 +1020,19 @@ const canonSlug=s=>{
   return s;
 };
 function gbUseful(s,gets){
+  if((s.modes||[]).includes('query')&&(s.hits||0)>0)return true;
   const t=Date.parse(s.ts); const sl=(s.slugs||[]).map(canonSlug);
   return gets.some(g=>g.p===s.p&&sl.includes(canonSlug(g.target))&&Date.parse(g.ts)>=t&&Date.parse(g.ts)-t<=GB_USE_MS);
 }
 
 // Two rates over time (call-count is a vanity metric — these show whether the brain
-// actually helped): HIT rate = search/query that returned ≥1 page; USEFUL rate = search
-// that was followed by a read of a surfaced page. Both honor the date + typed/bot filters.
+// actually helped): HIT rate = search/query that returned ≥1 page; USEFUL rate = a query
+// that returned synthesized context or a search followed by a surfaced-page read.
 function chGbHit(){
   const from=$('pf-from').value, to=$('pf-to').value;
   const inWin=r=>(!from||r.date>=from)&&(!to||r.date<=to);
   const g=GB.filter(r=>gbSq(r)&&inWin(r));
-  const gets=GB.filter(r=>gbKind(r)&&inWin(r)&&(r.modes||[]).includes('get')&&r.target);
+  const gets=GB.filter(r=>gbVisible(r)&&inWin(r)&&(r.modes||[]).includes('get')&&r.target);
   const svg=$('pf-s-gbhit'); svg.innerHTML='';
   if(!g.length){ svg.setAttribute('viewBox','0 0 1080 40'); svg.appendChild(txt(8,24,'no brain searches in this window',{'font-size':11,fill:'var(--muted)'})); $('pf-c-gbhit').textContent=''; return; }
   const hitN=g.filter(r=>r.hits>0).length, useN=g.filter(r=>gbUseful(r,gets)).length;
@@ -1048,7 +1071,7 @@ function chGbHit(){
 // grain than the window total. <synthetic> excluded (non-API).
 function chCostTime(){
   const from=$('pf-from').value, to=$('pf-to').value;
-  const recs=TOK.filter(r=>(!from||r.date>=from)&&(!to||r.date<=to)&&tokVisible(r));
+  const recs=TOK.filter(r=>(!from||r.date>=from)&&(!to||r.date<=to)&&tokInScope(r));
   const heatSvg=$('pf-s-costtime'); $('pf-s-costday').innerHTML='';
   if(!recs.length){ heatSvg.removeAttribute('width');heatSvg.removeAttribute('height');heatSvg.innerHTML=''; heatSvg.setAttribute('viewBox','0 0 1080 40'); heatSvg.appendChild(txt(8,24,'no token data in this window',{'font-size':11,fill:'var(--muted)'})); $('pf-c-costtime').textContent=''; return; }
 
@@ -1249,10 +1272,10 @@ function chSkillTime(calls, order){
   let hi=to?new Date(to+'T23:59:59').getTime():Math.max(...times);
   if(hi<lo) hi=lo;
   const spanD=(hi-lo)/DAY;
-  const stepD=spanD<=45?1:spanD<=120?7:spanD<=540?28:90;          // day / week / 4-week / quarter
+  const stepD=timeBinDays(spanD);
   const binMs=stepD*DAY;
   const a=new Date(lo); a.setHours(0,0,0,0); lo=a.getTime();      // align bins to local midnight
-  const nb=Math.max(1,Math.min(400,Math.floor((hi-lo)/binMs)+1));
+  const nb=Math.max(1,Math.floor((hi-lo)/binMs)+1);
   const series={}; cats.forEach(c=>series[c]=new Array(nb).fill(0));
   calls.forEach(o=>{ const t=o.p.ms; if(isNaN(t))return; const b=Math.floor((t-lo)/binMs);
     if(b>=0&&b<nb) series[catOf(o.k)][b]++; });
@@ -1269,7 +1292,7 @@ function chSkillTime(calls, order){
     const x=L+bw*i+(bw-bar)/2, yt=Y(cum[i]+v), h=Y(cum[i])-yt;
     svg.appendChild(el('rect',{x:x.toFixed(1),y:yt.toFixed(1),width:bar.toFixed(1),height:Math.max(0.5,h).toFixed(1),fill:colByCat[c],class:'cbar'}));
     cum[i]+=v; } });
-  const binLbl=stepD===1?'daily':stepD===7?'weekly':stepD===28?'4-week':'quarterly';
+  const binLbl=timeBinLabel(stepD);
   const bdate=i=>{ const d=new Date(lo+i*binMs); return `${d.getMonth()+1}/${d.getDate()}`; };
   // Per-column hover hit target → the full breakdown for that bin.
   for(let i=0;i<nb;i++){ let tot=0; cats.forEach(c=>tot+=series[c][i]); if(!tot) continue;
@@ -1398,7 +1421,7 @@ function selectWord(w){clearSel();
 // matching queries (with project + when), not your prose.
 function selectGbQueries(w){clearSel();
   const from=$('pf-from').value, to=$('pf-to').value;
-  const list=GB.filter(r=>r.q&&gbToks(r.q).includes(w)&&(!from||r.date>=from)&&(!to||r.date<=to))
+  const list=GB.filter(r=>gbVisible(r)&&r.q&&gbToks(r.q).includes(w)&&(!from||r.date>=from)&&(!to||r.date<=to))
     .map(r=>({p:r.p,date:r.date,time:(r.ts||'').slice(11,16),x:r.q,kind:'gbrain',
               hit:(r.hits||0)>0,hits:r.hits||0,_l:(r.q||'').toLowerCase()}));
   const hitN=list.filter(r=>r.hit).length, rate=list.length?Math.round(100*hitN/list.length):0;
@@ -1479,12 +1502,20 @@ function lollipops(svgId, items, o){
     if(it.onClick) g.onclick=()=>it.onClick(g);
     svg.appendChild(g);});
 }
+function projectActivityRows(){
+  if(PROJECTUNIT==='prompts') return P;
+  const sessions=new Map();
+  P.forEach((p,i)=>{const key=p.p+'|'+(p.s||'prompt-'+i),old=sessions.get(key);if(!old||p.ms<old.ms)sessions.set(key,p);});
+  return [...sessions.values()];
+}
 function chProj(){
-  const rows=Object.entries(P.reduce((a,p)=>(a[p.p]=(a[p.p]||0)+1,a),{})).sort((a,b)=>b[1]-a[1]);
+  const activity=projectActivityRows();
+  const rows=Object.entries(activity.reduce((a,p)=>(a[p.p]=(a[p.p]||0)+1,a),{})).sort((a,b)=>b[1]-a[1]);
   lollipops('pf-s-proj', rows.map(([name,v],i)=>{const c=STC[i%STC.length];
     return {label:sp(name),value:v,color:c,onClick:g=>select(g,`Project · ${sp(name)}`,P.filter(p=>p.p===name),c)};}),
     {autoL:130,rh:24,dot:6,fs:12,rpad:46});
-  $('pf-c-proj').innerHTML=`top focus<br><b>${rows[0][1]}</b> on ${esc(sp(rows[0][0]))}`;
+  const unit=PROJECTUNIT==='sessions'?'session':'prompt';
+  $('pf-c-proj').innerHTML=`top focus<br><b>${rows[0][1]}</b> ${unit}${rows[0][1]===1?'':'s'} on ${esc(sp(rows[0][0]))}`;
 }
 // Cap "Where The Attention Went" (variable project count) to the fixed-height
 // "How You Talk To The Machine" chart beside it, so the two-up row stays even —
@@ -1513,30 +1544,31 @@ function matchGbHeight(){
 function chProjTime(){
   const svg=$('pf-s-projtime'), legend=$('pf-projtime-legend'); svg.innerHTML=''; legend.innerHTML='';
   const blank=m=>{ svg.setAttribute('viewBox','0 0 1080 40'); svg.appendChild(txt(8,24,m,{'font-size':11,fill:'var(--muted)'})); };
-  if(!P.length) return blank('no prompts in this window');
-  const by={}; P.forEach(p=>by[p.p]=(by[p.p]||0)+1);
+  const activity=projectActivityRows(), unit=PROJECTUNIT==='sessions'?'session':'prompt';
+  if(!activity.length) return blank(`no ${unit}s in this window`);
+  const by={}; activity.forEach(p=>by[p.p]=(by[p.p]||0)+1);
   const order=Object.entries(by).sort((a,b)=>(b[1]-a[1])||(a[0]<b[0]?-1:1)).map(r=>r[0]);
   const top=order.slice(0,8), catOf=k=>top.includes(k)?k:'__other';
   const cats=top.concat(order.length>top.length?['__other']:[]);
   const colByCat={}; cats.forEach((c,i)=>colByCat[c]=c==='__other'?'#5b6472':STC[i%STC.length]);
   // Bin span from the explicit filter window so empty leading/trailing bins still show.
   const from=$('pf-from').value, to=$('pf-to').value, DAY=864e5;
-  // Single pass, not Math.min(...spread) — P can exceed the JS argument limit.
+  // Single pass, not Math.min(...spread) — activity can exceed the JS argument limit.
   let tmin=Infinity,tmax=-Infinity;
-  P.forEach(p=>{ if(!isNaN(p.ms)){ if(p.ms<tmin)tmin=p.ms; if(p.ms>tmax)tmax=p.ms; } });
+  activity.forEach(p=>{ if(!isNaN(p.ms)){ if(p.ms<tmin)tmin=p.ms; if(p.ms>tmax)tmax=p.ms; } });
   let lo=from?new Date(from+'T00:00:00').getTime():tmin;
   let hi=to?new Date(to+'T23:59:59').getTime():tmax;
   if(hi<lo) hi=lo;
   const spanD=(hi-lo)/DAY;
-  const stepD=spanD<=45?1:spanD<=120?7:spanD<=540?28:90;          // day / week / 4-week / quarter
+  const stepD=timeBinDays(spanD);
   const binMs=stepD*DAY;
   const a=new Date(lo); a.setHours(0,0,0,0); lo=a.getTime();      // align bins to local midnight
-  const nb=Math.max(1,Math.min(400,Math.floor((hi-lo)/binMs)+1));
+  const nb=Math.max(1,Math.floor((hi-lo)/binMs)+1);
   const series={}; cats.forEach(c=>series[c]=new Array(nb).fill(0));
-  P.forEach(p=>{ const t=p.ms; if(isNaN(t))return; const b=Math.floor((t-lo)/binMs);
+  activity.forEach(p=>{ const t=p.ms; if(isNaN(t))return; const b=Math.floor((t-lo)/binMs);
     if(b>=0&&b<nb) series[catOf(p.p)][b]++; });
   let peak=0; for(let i=0;i<nb;i++){ let s=0; cats.forEach(c=>s+=series[c][i]); peak=Math.max(peak,s); }
-  if(!peak) return blank('no prompts in this window');
+  if(!peak) return blank(`no ${unit}s in this window`);
   const W=1080,L=34,R=14,top0=14,bottom=22,H=200,pw=W-L-R,ph=H-top0-bottom;
   svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
   const Y=v=>top0+ph*(1-v/peak);
@@ -1548,14 +1580,14 @@ function chProjTime(){
     const x=L+bw*i+(bw-bar)/2, yt=Y(cum[i]+v), h=Y(cum[i])-yt;
     svg.appendChild(el('rect',{x:x.toFixed(1),y:yt.toFixed(1),width:bar.toFixed(1),height:Math.max(0.5,h).toFixed(1),fill:colByCat[c],class:'cbar'}));
     cum[i]+=v; } });
-  const binLbl=stepD===1?'daily':stepD===7?'weekly':stepD===28?'4-week':'quarterly';
+  const binLbl=timeBinLabel(stepD);
   const bdate=i=>{ const d=new Date(lo+i*binMs); return `${d.getMonth()+1}/${d.getDate()}`; };
   for(let i=0;i<nb;i++){ let tot=0; cats.forEach(c=>tot+=series[c][i]); if(!tot) continue;
     const rangeEnd=new Date(lo+(i+1)*binMs-DAY);
     const span=stepD===1?bdate(i):`${bdate(i)}–${rangeEnd.getMonth()+1}/${rangeEnd.getDate()}`;
     const list=cats.map(c=>({c,v:series[c][i]})).filter(o=>o.v>0).sort((x,y)=>y.v-x.v)
       .map(o=>`<span class="sw" style="background:${colByCat[o.c]}"></span>${o.c==='__other'?'other':esc(sp(o.c))} · ${o.v}`).join('<br>');
-    const html=`<b>${tot}</b> prompt${tot===1?'':'s'} · ${span}<br>${list}`;
+    const html=`<b>${tot}</b> ${unit}${tot===1?'':'s'} · ${span}<br>${list}`;
     const hit=el('rect',{x:(L+bw*i).toFixed(1),y:top0,width:bw.toFixed(1),height:ph,fill:'transparent',class:'chit'});
     hit.addEventListener('mousemove',e=>showTip(html,e)); hit.addEventListener('mouseleave',hideTip);
     svg.appendChild(hit); }
@@ -1565,10 +1597,10 @@ function chProjTime(){
   cats.forEach(c=>{ const tot=series[c].reduce((s,v)=>s+v,0); if(!tot) return;
     const s=document.createElement('span');
     s.innerHTML=`<i style="background:${colByCat[c]}"></i>${c==='__other'?'other':esc(sp(c))} · ${tot}`;
-    if(c!=='__other'){ s.style.cursor='pointer'; s.title=`read the ${tot} ${sp(c)} prompt${tot===1?'':'s'}`;
+    if(c!=='__other'){ s.style.cursor='pointer'; s.title=`read the prompts behind ${tot} ${sp(c)} ${unit}${tot===1?'':'s'}`;
       s.onclick=()=>select(null,`Project · ${sp(c)}`,P.filter(p=>p.p===c),colByCat[c]); }
     legend.appendChild(s); });
-  $('pf-c-projtime').innerHTML=`<b>${P.length}</b> prompt${P.length===1?'':'s'} · ${binLbl} bins`;
+  $('pf-c-projtime').innerHTML=`<b>${activity.length}</b> ${unit}${activity.length===1?'':'s'} · ${binLbl} bins`;
 }
 function chHeat(){
   const m=Array.from({length:7},()=>Array(24).fill(0));
@@ -1599,7 +1631,7 @@ function chFocus(){
   const iso=/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\S*/;
   const turns=[];
   TOK.forEach(r=>{
-    if((from&&r.date<from)||(to&&r.date>to)||!tokVisible(r))return;
+    if((from&&r.date<from)||(to&&r.date>to)||!tokInScope(r))return;
     if(typeof r.turn==='string'&&r.turn.startsWith('agent-'))return;   // subagent fan-out, not a typed turn
     const end=new Date(r.ts); if(isNaN(end))return;
     let start=end;
