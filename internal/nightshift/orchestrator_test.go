@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/TheWeiHu/devbrain/assets"
 )
 
 // TestMain builds the real devbrain binary once and exposes it via
@@ -88,6 +90,55 @@ func TestPromptPrecedence(t *testing.T) {
 	}
 	if PlanRules(t.TempDir()) == "" {
 		t.Error("plan prompt must resolve from the embed")
+	}
+}
+
+func TestEmbeddedPromptsUseBoundedTaskContracts(t *testing.T) {
+	t.Parallel()
+	drain := DrainRules(t.TempDir())
+	planPrompt := PlanRules(t.TempDir())
+	workFile, err := assets.Skills.ReadFile("skills/work/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workPrompt := string(workFile)
+
+	for _, want := range []string{
+		"TASK-FIRST CONTEXT AND WORK LOOP",
+		"at most two focused queries",
+		"There is no page-count quota",
+		"250 words or fewer",
+	} {
+		if !strings.Contains(drain, want) && !strings.Contains(workPrompt, want) {
+			t.Errorf("bounded worker prompts missing %q", want)
+		}
+	}
+
+	for _, want := range []string{
+		"TASK QUALITY GATE",
+		"Add 1 to 3 tasks",
+		"Outcome:",
+		"Acceptance:",
+		"Verify:",
+		"Depends on:",
+		"Conflict key:",
+		"Budget: one worker turn",
+	} {
+		if !strings.Contains(planPrompt, want) {
+			t.Errorf("planning prompt missing task-contract rule %q", want)
+		}
+	}
+
+	combined := drain + "\n" + workPrompt
+	for _, forbidden := range []string{
+		"GATHER CONTEXT METICULOUSLY",
+		"top 1-3 pages",
+		"3-5 most relevant",
+		"500-1000 words",
+	} {
+		if strings.Contains(combined, forbidden) {
+			t.Errorf("worker prompts retain fixed retrieval quota %q", forbidden)
+		}
 	}
 }
 
