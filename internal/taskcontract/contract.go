@@ -159,9 +159,13 @@ func validConflictKey(key string) string {
 	if value == "" || strings.HasPrefix(value, "/") || strings.Contains(value, "*") {
 		return "invalid path conflict key: " + key
 	}
-	clean := path.Clean(value)
+	trimmed := strings.TrimSuffix(value, "/")
+	clean := path.Clean(trimmed)
 	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
 		return "invalid path conflict key: " + key
+	}
+	if clean != trimmed {
+		return "path conflict key must be normalized: " + key
 	}
 	return ""
 }

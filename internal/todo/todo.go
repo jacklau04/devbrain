@@ -42,6 +42,8 @@ Tasks are created by /distill and worked by /continue — this CLI is the substr
   $DEVBRAIN_DATA/projects/<project>/todo/<id>.md
 
 	  todo add "<title>" [-p N] [-b "body"] [contract flags]  create (prints id)
+	    contract flags: --contract --task-type TYPE --depends-on IDS|none
+	                    --conflict-key KEY (repeatable) --budget-turns N
 	  todo log "<title>" [pr-url] [-p N] [-b "body"]  record already-shipped work: born done, origin: backfill (PR optional)
 	  todo list [status]                      tasks by status (default open; 'all'=any), priority first
 	  todo next                               id of the top open task (empty if none)

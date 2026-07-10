@@ -327,7 +327,7 @@ func (c *cli) claimNext(args []string) int {
 func (c *cli) withClaimLock(fn func() int) int {
 	sum := sha256.Sum256([]byte(c.dir))
 	lock := filepath.Join(os.TempDir(), fmt.Sprintf("devbrain-todo-claim-%x.lock", sum[:8]))
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for {
 		f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
@@ -339,7 +339,7 @@ func (c *cli) withClaimLock(fn func() int) int {
 		if !os.IsExist(err) {
 			return c.die("claim-next lock: " + err.Error())
 		}
-		if fi, statErr := os.Stat(lock); statErr == nil && time.Since(fi.ModTime()) > 30*time.Second {
+		if fi, statErr := os.Stat(lock); statErr == nil && time.Since(fi.ModTime()) > 60*time.Second {
 			os.Remove(lock)
 			continue
 		}
