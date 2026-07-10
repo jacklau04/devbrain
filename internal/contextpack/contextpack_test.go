@@ -95,6 +95,39 @@ Newest turn with useful context.
 	}
 }
 
+func TestBuildObjectiveAndRawLogOptOut(t *testing.T) {
+	data := t.TempDir()
+	project := "owner__repo"
+	writeFile(t, filepath.Join(data, "projects", project, "objective.md"), `# Objective
+
+Keep the queue bounded and the repository green.
+`)
+	writeFile(t, filepath.Join(data, "projects", project, "brain", "overview.md"), "# Overview\n\nNotes.\n")
+	writeFile(t, filepath.Join(data, "projects", project, "log", "2026-07-07", "main.s1.md"), "## 09:00:00\n\nRaw prompt text.\n")
+
+	brief, err := Build(Options{DataDir: data, Project: project, NoRawLogs: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if brief.Objective != "Keep the queue bounded and the repository green." {
+		t.Fatalf("objective = %q", brief.Objective)
+	}
+	if brief.RawLogs.Entries != nil || brief.RawLogs.FileCount != 0 {
+		t.Fatalf("raw logs should be omitted: %+v", brief.RawLogs)
+	}
+	var out bytes.Buffer
+	RenderText(&out, brief)
+	if !strings.Contains(out.String(), "Objective:") || strings.Contains(out.String(), "Recent raw log entries") {
+		t.Fatalf("unexpected rendered brief:\n%s", out.String())
+	}
+}
+
+func TestTruncateIsRuneSafe(t *testing.T) {
+	if got := truncate("éééé", 3); got != "ééé" {
+		t.Fatalf("truncate unicode = %q", got)
+	}
+}
+
 func TestRunJSON(t *testing.T) {
 	data := t.TempDir()
 	project := "owner__repo"

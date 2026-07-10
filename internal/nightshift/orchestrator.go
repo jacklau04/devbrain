@@ -163,7 +163,9 @@ Do not ask the user questions. If the task is genuinely blocked after checking t
 	return strings.TrimSpace(rules) + contextSection + "\n\n## Codex Nightshift Turn\n\n" + task + "\n"
 }
 
-const maxNightshiftContextRunes = 8000
+// Item counts and per-field limits are the real context budget. This ceiling
+// only guards against malformed input escaping those semantic bounds.
+const maxNightshiftContextRunes = 4000
 
 func boundedContextBrief(opt Options, wt string) string {
 	if opt.Mode != "codex" || opt.NoContextBrief {
@@ -171,9 +173,9 @@ func boundedContextBrief(opt Options, wt string) string {
 	}
 	remote, _ := wtRepo(wt).Run("remote", "get-url", "origin")
 	brief, err := contextpack.Build(contextpack.Options{
-		CWD: wt, Project: projectkey.RemoteToKey(remote), MaxPages: 4, MaxTodos: 4, MaxLogEntries: 1,
+		CWD: wt, Project: projectkey.RemoteToKey(remote), MaxPages: 2, MaxTodos: 4, NoRawLogs: true,
 	})
-	if err != nil || (len(brief.Brain.Pages) == 0 && len(brief.TODO.Tasks) == 0 && len(brief.RawLogs.Entries) == 0) {
+	if err != nil || (brief.Objective == "" && len(brief.Brain.Pages) == 0 && len(brief.TODO.Tasks) == 0) {
 		return ""
 	}
 	var out strings.Builder

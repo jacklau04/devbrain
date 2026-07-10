@@ -154,6 +154,9 @@ func TestBoundedContextBrief(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(brainDir, "architecture.md"), []byte("# Architecture\n\nUse the bounded queue context."), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(data, "projects", "test__repo", "objective.md"), []byte("# Objective\n\nKeep the worker focused."), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	wt := t.TempDir()
 	run(t, wt, "git", "init", "-q")
@@ -161,8 +164,11 @@ func TestBoundedContextBrief(t *testing.T) {
 	opt := DefaultOptions()
 	opt.Mode = "codex"
 	got := boundedContextBrief(opt, wt)
-	if !strings.Contains(got, "test__repo/architecture") || !strings.Contains(got, "bounded queue context") {
+	if !strings.Contains(got, "Keep the worker focused") || !strings.Contains(got, "test__repo/architecture") || !strings.Contains(got, "bounded queue context") {
 		t.Fatalf("context brief missing project page:\n%s", got)
+	}
+	if strings.Contains(got, "Recent raw log entries") || len([]rune(got)) > maxNightshiftContextRunes {
+		t.Fatalf("nightshift brief exceeded its semantic budget:\n%s", got)
 	}
 	opt.NoContextBrief = true
 	if got := boundedContextBrief(opt, wt); got != "" {

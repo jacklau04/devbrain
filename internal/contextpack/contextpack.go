@@ -29,6 +29,10 @@ const (
 	maxPagesLimit        = 20
 	maxTodosLimit        = 20
 	maxLogEntriesLimit   = 10
+	maxSlugRunes         = 200
+	maxTitleRunes        = 160
+	maxExcerptRunes      = 240
+	maxObjectiveRunes    = 600
 )
 
 // Options controls the context brief builder.
@@ -40,6 +44,7 @@ type Options struct {
 	MaxPages      int
 	MaxTodos      int
 	MaxLogEntries int
+	NoRawLogs     bool
 }
 
 // Brief is the stable JSON shape for devbrain context.
@@ -48,6 +53,7 @@ type Brief struct {
 	CWD        string       `json:"cwd,omitempty"`
 	ProjectDir string       `json:"project_dir"`
 	Query      string       `json:"query,omitempty"`
+	Objective  string       `json:"objective,omitempty"`
 	Brain      BrainSummary `json:"brain"`
 	TODO       TODOSummary  `json:"todo"`
 	RawLogs    LogSummary   `json:"raw_logs"`
@@ -105,9 +111,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	fs.IntVar(&opts.MaxPages, "max-pages", defaultMaxPages, "maximum brain pages to show")
 	fs.IntVar(&opts.MaxTodos, "max-todos", defaultMaxTodos, "maximum active tasks to show")
 	fs.IntVar(&opts.MaxLogEntries, "max-log-entries", defaultMaxLogEntries, "maximum recent raw log entries to show")
+	fs.BoolVar(&opts.NoRawLogs, "no-raw-logs", false, "omit recent raw prompt-log entries")
 	fs.BoolVar(&jsonOut, "json", false, "emit machine-readable JSON")
 	fs.Usage = func() {
-		fmt.Fprint(stderr, `usage: devbrain context [--cwd PATH] [--project KEY] [--query TEXT] [--max-pages N] [--max-todos N] [--max-log-entries N] [--json]
+		fmt.Fprint(stderr, `usage: devbrain context [--cwd PATH] [--project KEY] [--query TEXT] [--max-pages N] [--max-todos N] [--max-log-entries N] [--no-raw-logs] [--json]
 
 Print a compact, read-only project brief for agent startup/resume. The brief is
 bounded and comes from on-disk brain pages, active TODOs, and recent raw logs.
@@ -168,15 +175,18 @@ func Build(opts Options) (Brief, error) {
 	if fi, err := os.Stat(projectDir); err != nil || !fi.IsDir() {
 		brief.Warnings = append(brief.Warnings, "project directory not found in devbrain data")
 	}
+	brief.Objective = readObjective(projectDir)
 	brief.Brain = readBrain(projectDir, project, brief.Query, opts.MaxPages)
 	brief.TODO = readTODO(projectDir, project, opts.MaxTodos)
-	brief.RawLogs = readLogs(projectDir, opts.MaxLogEntries)
+	if !opts.NoRawLogs {
+		brief.RawLogs = readLogs(projectDir, opts.MaxLogEntries)
+	}
 	if brief.Brain.Count == 0 {
 		brief.Warnings = append(brief.Warnings, "no brain pages found; run /distill or /continue after capture")
 	} else if brief.Query != "" && brief.Brain.Matched == 0 {
 		brief.Warnings = append(brief.Warnings, "no brain pages matched --query")
 	}
-	if brief.RawLogs.FileCount == 0 {
+	if !opts.NoRawLogs && brief.RawLogs.FileCount == 0 {
 		brief.Warnings = append(brief.Warnings, "no raw prompt logs found for this project")
 	}
 	return brief, nil
@@ -203,6 +213,10 @@ func RenderText(w io.Writer, brief Brief) {
 		for _, warning := range brief.Warnings {
 			fmt.Fprintf(w, "- %s\n", warning)
 		}
+	}
+	if brief.Objective != "" {
+		fmt.Fprintln(w, "\nObjective:")
+		fmt.Fprintf(w, "- %s\n", brief.Objective)
 	}
 	fmt.Fprintf(w, "\nBrain pages (%d total", brief.Brain.Count)
 	if brief.Query != "" {
@@ -238,15 +252,17 @@ func RenderText(w io.Writer, brief Brief) {
 		fmt.Fprintln(w, "- none")
 	}
 
-	fmt.Fprintf(w, "\nRecent raw log entries (%d file(s); showing %d):\n", brief.RawLogs.FileCount, len(brief.RawLogs.Entries))
-	for _, entry := range brief.RawLogs.Entries {
-		fmt.Fprintf(w, "- %s %s\n", entry.At, entry.File)
-		if entry.Excerpt != "" {
-			fmt.Fprintf(w, "  %s\n", entry.Excerpt)
+	if brief.RawLogs.Entries != nil {
+		fmt.Fprintf(w, "\nRecent raw log entries (%d file(s); showing %d):\n", brief.RawLogs.FileCount, len(brief.RawLogs.Entries))
+		for _, entry := range brief.RawLogs.Entries {
+			fmt.Fprintf(w, "- %s %s\n", entry.At, entry.File)
+			if entry.Excerpt != "" {
+				fmt.Fprintf(w, "  %s\n", entry.Excerpt)
+			}
 		}
-	}
-	if len(brief.RawLogs.Entries) == 0 {
-		fmt.Fprintln(w, "- none")
+		if len(brief.RawLogs.Entries) == 0 {
+			fmt.Fprintln(w, "- none")
+		}
 	}
 }
 
@@ -257,45 +273,83 @@ type brainCandidate struct {
 	updated    time.Time
 }
 
+func readObjective(projectDir string) string {
+	raw, err := os.ReadFile(filepath.Join(projectDir, "objective.md"))
+	if err != nil {
+		return ""
+	}
+	return firstParagraph(string(raw), maxObjectiveRunes)
+}
+
+func firstParagraph(text string, limit int) string {
+	var parts []string
+	started := false
+	inFrontmatter := false
+	for i, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if i == 0 && trimmed == "---" {
+			inFrontmatter = true
+			continue
+		}
+		if inFrontmatter {
+			if trimmed == "---" {
+				inFrontmatter = false
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") {
+			if started {
+				break
+			}
+			continue
+		}
+		cleaned := cleanLine(line)
+		if cleaned == "" {
+			if started {
+				break
+			}
+			continue
+		}
+		started = true
+		parts = append(parts, cleaned)
+	}
+	return truncate(strings.Join(parts, " "), limit)
+}
+
 func readBrain(projectDir, project, query string, limit int) BrainSummary {
 	files, _ := filepath.Glob(filepath.Join(projectDir, "brain", "*.md"))
 	sort.Strings(files)
 	terms := searchTerms(query)
 	out := BrainSummary{Count: len(files)}
+	if len(terms) == 0 {
+		updated := make(map[string]time.Time, len(files))
+		for _, file := range files {
+			if info, err := os.Stat(file); err == nil {
+				updated[file] = info.ModTime()
+			}
+		}
+		sort.SliceStable(files, func(i, j int) bool {
+			if !updated[files[i]].Equal(updated[files[j]]) {
+				return updated[files[i]].After(updated[files[j]])
+			}
+			return files[i] < files[j]
+		})
+		out.Matched = len(files)
+		for _, file := range files {
+			if len(out.Pages) == limit {
+				break
+			}
+			if candidate, ok := loadBrainCandidate(file, project, nil); ok {
+				out.Pages = append(out.Pages, candidate.BrainPage)
+			}
+		}
+		return out
+	}
 	var candidates []brainCandidate
 	for _, file := range files {
-		raw, err := os.ReadFile(file)
-		if err != nil {
-			continue
+		if candidate, ok := loadBrainCandidate(file, project, terms); ok {
+			candidates = append(candidates, candidate)
 		}
-		text := string(raw)
-		distinct, hits := scoreText(text, terms)
-		if len(terms) > 0 && distinct == 0 {
-			continue
-		}
-		info, _ := os.Stat(file)
-		updated := time.Time{}
-		updatedAt := ""
-		if info != nil {
-			updated = info.ModTime().UTC()
-			updatedAt = updated.Format(time.RFC3339)
-		}
-		score := 0
-		if len(terms) > 0 {
-			score = distinct*100 + hits
-		}
-		candidates = append(candidates, brainCandidate{
-			BrainPage: BrainPage{
-				Slug:      project + "/" + strings.TrimSuffix(filepath.Base(file), filepath.Ext(file)),
-				Title:     markdownTitle(text),
-				Excerpt:   excerpt(text, terms),
-				UpdatedAt: updatedAt,
-				Score:     score,
-			},
-			scoreTerms: distinct,
-			lineHits:   hits,
-			updated:    updated,
-		})
 	}
 	out.Matched = len(candidates)
 	sort.SliceStable(candidates, func(i, j int) bool {
@@ -319,6 +373,36 @@ func readBrain(projectDir, project, query string, limit int) BrainSummary {
 	return out
 }
 
+func loadBrainCandidate(file, project string, terms []string) (brainCandidate, bool) {
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		return brainCandidate{}, false
+	}
+	text := string(raw)
+	distinct, hits := scoreText(text, terms)
+	if len(terms) > 0 && distinct == 0 {
+		return brainCandidate{}, false
+	}
+	updated := time.Time{}
+	updatedAt := ""
+	if info, err := os.Stat(file); err == nil {
+		updated = info.ModTime().UTC()
+		updatedAt = updated.Format(time.RFC3339)
+	}
+	return brainCandidate{
+		BrainPage: BrainPage{
+			Slug:      truncate(project+"/"+strings.TrimSuffix(filepath.Base(file), filepath.Ext(file)), maxSlugRunes),
+			Title:     truncate(markdownTitle(text), maxTitleRunes),
+			Excerpt:   excerpt(text, terms),
+			UpdatedAt: updatedAt,
+			Score:     distinct*100 + hits,
+		},
+		scoreTerms: distinct,
+		lineHits:   hits,
+		updated:    updated,
+	}, true
+}
+
 func readTODO(projectDir, project string, limit int) TODOSummary {
 	files, _ := filepath.Glob(filepath.Join(projectDir, "todo", "*.md"))
 	sort.Strings(files)
@@ -329,8 +413,8 @@ func readTODO(projectDir, project string, limit int) TODOSummary {
 			continue
 		}
 		tasks = append(tasks, TODOTask{
-			ID:       t.ID,
-			Title:    cleanLine(t.Title),
+			ID:       truncate(t.ID, maxSlugRunes),
+			Title:    truncate(cleanLine(t.Title), maxTitleRunes),
 			Status:   t.Status,
 			Priority: t.Priority,
 			Excerpt:  excerpt(t.Body, nil),
@@ -374,7 +458,7 @@ type logCandidate struct {
 func readLogs(projectDir string, limit int) LogSummary {
 	files, _ := filepath.Glob(filepath.Join(projectDir, "log", "*", "*.md"))
 	sort.Strings(files)
-	out := LogSummary{FileCount: len(files)}
+	out := LogSummary{FileCount: len(files), Entries: []LogEntry{}}
 	var entries []logCandidate
 	for _, file := range files {
 		raw, err := os.ReadFile(file)
@@ -413,7 +497,7 @@ func parseLogEntries(day, file, content string) []logCandidate {
 		out = append(out, logCandidate{
 			LogEntry: LogEntry{
 				At:      at,
-				File:    file,
+				File:    truncate(file, maxSlugRunes),
 				Excerpt: excerpt(strings.Join(body, "\n"), nil),
 			},
 			sortKey: sortKey,
@@ -474,7 +558,7 @@ func excerpt(text string, terms []string) string {
 		var headingMatch string
 		for _, line := range lines {
 			if lineMatches(line, terms) {
-				cleaned := truncate(cleanLine(line), 240)
+				cleaned := truncate(cleanLine(line), maxExcerptRunes)
 				if strings.HasPrefix(strings.TrimSpace(line), "#") {
 					if headingMatch == "" {
 						headingMatch = cleaned
@@ -499,7 +583,7 @@ func excerpt(text string, terms []string) string {
 		if strings.HasPrefix(cleaned, "agent: ") || strings.HasPrefix(cleaned, "cost: ") {
 			continue
 		}
-		return truncate(cleaned, 240)
+		return truncate(cleaned, maxExcerptRunes)
 	}
 	return ""
 }
@@ -512,13 +596,17 @@ func cleanLine(s string) string {
 }
 
 func truncate(s string, max int) string {
-	if len(s) <= max {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
 		return s
 	}
 	if max <= 3 {
-		return s[:max]
+		return string(runes[:max])
 	}
-	return strings.TrimSpace(s[:max-3]) + "..."
+	return strings.TrimSpace(string(runes[:max-3])) + "..."
 }
 
 func searchTerms(query string) []string {
