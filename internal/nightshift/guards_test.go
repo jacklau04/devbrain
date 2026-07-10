@@ -134,9 +134,13 @@ func TestNightshiftGuards(t *testing.T) {
 			t.Errorf("landed SHA == current origin/nightshift: %q vs %q", landedSHA, goodSHA)
 		}
 
-		// Mark both done; 0001 landed (present), 0002 done but never landed.
-		h.RunWith(clitest.RunOpts{Dir: base}, "todo", "done", "0001-alpha", "--force")
-		h.RunWith(clitest.RunOpts{Dir: base}, "todo", "done", "0002-beta", "--force")
+		// Mark both normally done; 0001 landed (present), 0002 has stored done
+		// state but never landed. `--force` is intentionally terminal now, so it
+		// would not model the stale-without-Git-evidence case this test exercises.
+		for _, id := range []string{"0001-alpha", "0002-beta"} {
+			h.RunWith(clitest.RunOpts{Dir: base}, "todo", "review", id, "https://example.test/pr/"+id)
+			h.RunWith(clitest.RunOpts{Dir: base}, "todo", "done", id)
+		}
 
 		r := ns("verify", "--only", "0001-alpha")
 		if r.Code != 0 {

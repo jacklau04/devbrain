@@ -148,9 +148,17 @@ func TestTodoCLI(t *testing.T) {
 		if got := field(a, "status"); got != "done" {
 			t.Errorf("done --force -> status %q, want done", got)
 		}
+		if got := field(a, "done_forced"); got != "true" {
+			t.Errorf("done --force -> done_forced %q, want true", got)
+		}
 		iso := regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$`)
 		if got := field(a, "done_at"); !iso.MatchString(got) {
 			t.Errorf("done_at = %q, want UTC ISO-8601", got)
+		}
+		firstDoneAt := field(a, "done_at")
+		run("done", a, "--force")
+		if got := field(a, "done_at"); got != firstDoneAt {
+			t.Errorf("idempotent done rewrote done_at from %q to %q", firstDoneAt, got)
 		}
 		if field(c, "done_at") != "" {
 			t.Error("open task carries a done_at")
@@ -166,6 +174,11 @@ func TestTodoCLI(t *testing.T) {
 		if got := field(a, "status"); got != "done" {
 			t.Errorf("release reopened a done task: status %q", got)
 		}
+		run("reopen", a, "regenerate")
+		if got := field(a, "done_forced"); got != "" {
+			t.Errorf("reopen retained done_forced marker %q", got)
+		}
+		run("done", a, "--force") // restore shared fixture state for later subtests
 	})
 
 	t.Run("review status", func(t *testing.T) {
@@ -351,7 +364,7 @@ func TestTodoDeriveGit(t *testing.T) {
 	cases := []struct{ name, want, id string }{
 		{"nightshift merge -> done", "done", ddone},
 		{"remote todo branch -> review", "review", dreview},
-		{"done w/o merge evidence reopens", "", dreset},
+		{"force-done stays terminal without merge evidence", "done", dreset},
 		{"fresh claim lease -> taken", "taken", dtaken},
 		{"held stays authoritative", "held", dheld},
 	}

@@ -33,9 +33,11 @@ type Doc struct {
 	Project     string      `json:"project"`
 	Running     bool        `json:"running"`
 	Queue       QueueCounts `json:"queue"`
+	QueueStored QueueCounts `json:"queue_stored"`
+	QueueBasis  string      `json:"queue_basis"`
 	TokensMin   TokenPair   `json:"tokens_min"` // new (non-cached) tokens, last 60s
 	TokensRun   TokenPair   `json:"tokens_run"` // this-run non-cached in/out (events since run start)
-	CostRun     float64     `json:"cost_run"`   // this-run true billed $ incl. cache
+	CostRun     float64     `json:"cost_run"`   // this-run token-price API equivalent incl. cache
 	History     []HistPoint `json:"history"`
 	Parked      []Parked    `json:"parked"`
 	ParkedCount int         `json:"parked_count"`
@@ -160,16 +162,19 @@ type Emitter struct {
 	// TodoOutput runs `devbrain todo <args...>` in the repo with the derive
 	// env (DERIVE_GIT=1, FETCH_TTL=60) and returns stdout. Injectable.
 	TodoOutput func(args ...string) string
+	// TodoStoredOutput returns the same queue without Git status derivation.
+	TodoStoredOutput func(args ...string) string
 	// ClaudeProjects is ~/.claude/projects (transcript store root).
 	ClaudeProjects string
 
-	rows [][2]string // (status, id) — ONE derive pass per emit
+	rows       [][2]string // (status, id) — ONE derive pass per emit
+	storedRows [][2]string // stored frontmatter status — ONE pass per emit
 }
 
 func NewEmitter(repo string) *Emitter {
 	home, _ := os.UserHomeDir()
 	e := &Emitter{Repo: repo, ClaudeProjects: filepath.Join(home, ".claude", "projects")}
-	e.TodoOutput = func(args ...string) string {
+	runTodo := func(derive string, args ...string) string {
 		self := os.Getenv("DEVBRAIN_BIN") // shim convention; test-binary guard
 		if self == "" {
 			var err error
@@ -179,10 +184,12 @@ func NewEmitter(repo string) *Emitter {
 		}
 		cmd := exec.Command(self, append([]string{"todo"}, args...)...)
 		cmd.Dir = repo
-		cmd.Env = append(os.Environ(), "DEVBRAIN_TODO_DERIVE_GIT=1", "DEVBRAIN_TODO_FETCH_TTL=60")
+		cmd.Env = append(os.Environ(), "DEVBRAIN_TODO_DERIVE_GIT="+derive, "DEVBRAIN_TODO_FETCH_TTL=60")
 		out, _ := cmd.Output()
 		return string(out)
 	}
+	e.TodoOutput = func(args ...string) string { return runTodo("1", args...) }
+	e.TodoStoredOutput = func(args ...string) string { return runTodo("0", args...) }
 	return e
 }
 
@@ -209,12 +216,24 @@ func lastLines(s string, n int) string {
 
 func (e *Emitter) allRows() [][2]string {
 	if e.rows == nil {
-		e.rows = [][2]string{}
-		for _, m := range rowRe.FindAllStringSubmatch(e.TodoOutput("list", "all"), -1) {
-			e.rows = append(e.rows, [2]string{m[1], m[2]})
-		}
+		e.rows = parseRows(e.TodoOutput("list", "all"))
 	}
 	return e.rows
+}
+
+func (e *Emitter) allStoredRows() [][2]string {
+	if e.storedRows == nil {
+		e.storedRows = parseRows(e.TodoStoredOutput("list", "all"))
+	}
+	return e.storedRows
+}
+
+func parseRows(output string) [][2]string {
+	rows := [][2]string{}
+	for _, m := range rowRe.FindAllStringSubmatch(output, -1) {
+		rows = append(rows, [2]string{m[1], m[2]})
+	}
+	return rows
 }
 
 // count tallies queue rows in the given status, scoped to only when non-nil (a
@@ -222,8 +241,16 @@ func (e *Emitter) allRows() [][2]string {
 // the Emitter: the emit loop reuses one Emitter across runs, so the fence must
 // be re-read each pass.
 func (e *Emitter) count(status string, only map[string]bool) int {
+	return countRows(e.allRows(), status, only)
+}
+
+func (e *Emitter) countStored(status string, only map[string]bool) int {
+	return countRows(e.allStoredRows(), status, only)
+}
+
+func countRows(rows [][2]string, status string, only map[string]bool) int {
 	n := 0
-	for _, r := range e.allRows() {
+	for _, r := range rows {
 		if r[0] != status {
 			continue
 		}
@@ -556,6 +583,7 @@ func (e *Emitter) Emit() (retire bool, err error) {
 	// reuses one Emitter across ticks, so a stale cache would freeze the
 	// open/done/review counts at the run-start snapshot while work merges.
 	e.rows = nil
+	e.storedRows = nil
 
 	// Resolve this run's identity up front — the worker loops scope cards to it.
 	orchPID := orchestratorPID(repo)
@@ -758,11 +786,13 @@ func (e *Emitter) Emit() (retire bool, err error) {
 	doc := Doc{
 		Updated: updated, StoppedAt: stoppedAt, RunID: runID, Started: started,
 		Project: filepath.Base(repo), Running: running,
-		Queue:     QueueCounts{Open: e.count("open", only), Done: e.count("done", only), Review: e.count("review", only)},
-		TokensMin: TokenPair{In: rateIn, Out: rateOut},
-		TokensRun: TokenPair{In: run.in, Out: run.out},
-		CostRun:   pricing.CostUSD(priceMap(run)),
-		History:   hist, Parked: parked, ParkedCount: parkedCount,
+		Queue:       QueueCounts{Open: e.count("open", only), Done: e.count("done", only), Review: e.count("review", only)},
+		QueueStored: QueueCounts{Open: e.countStored("open", only), Done: e.countStored("done", only), Review: e.countStored("review", only)},
+		QueueBasis:  "git-derived",
+		TokensMin:   TokenPair{In: rateIn, Out: rateOut},
+		TokensRun:   TokenPair{In: run.in, Out: run.out},
+		CostRun:     pricing.CostUSD(priceMap(run)),
+		History:     hist, Parked: parked, ParkedCount: parkedCount,
 		Workers: workers, Nightshift: merges, Log: logTail,
 	}
 

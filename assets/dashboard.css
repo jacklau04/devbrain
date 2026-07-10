@@ -300,6 +300,11 @@ small.k{color:var(--muted)}
 .ns-stat:last-child{border-right:0}
 .ns-stat .n{font-size:17px;font-weight:600;font-family:var(--mono);font-variant-numeric:tabular-nums}
 .ns-stat .l{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.04em;margin-top:2px}
+.ns-limit{display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;max-width:900px;margin:0 auto 12px;padding:8px 12px;border:1px solid #6b5421;border-radius:7px;background:#2a2416;color:var(--warn);font-size:12px}
+.ns-limit b{font-family:var(--mono);font-size:11px}.ns-limit span{color:var(--text)}
+.ns-limit.history{border-color:var(--line);background:var(--panel2);color:var(--muted)}
+.ns-dot.stopped{background:var(--muted)}
+.ns-queue-note{text-align:center;margin:-3px auto 12px;color:var(--muted);font-size:11px}.ns-queue-note b{color:var(--text);font-family:var(--mono)}
 .ns-panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;margin-bottom:12px}
 .ns-panel>h3,.ns-term>h3{margin:0;padding:9px 13px;border-bottom:1px solid var(--line);font-family:system-ui}
 .ns-panel>h3{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}

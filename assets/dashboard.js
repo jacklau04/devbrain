@@ -295,18 +295,40 @@ function renderMonitor(){
   m.querySelectorAll(".ns-msgs").forEach(el=>{ el.scrollTop=el.scrollHeight; });   // keep each feed at the latest
   tickStale();   // truthful staleness badge on first paint, not the "live" placeholder
 }
+function usageLimitResponse(text){
+  return /^\s*(?:error:\s*)?(?:you.?ve hit (?:your )?(?:usage )?limit|you have hit (?:your )?(?:usage )?limit|(?:usage|monthly|weekly) (?:limit|quota) (?:reached|exceeded)|out of [^\n]*credits?)\b/i.test(text||"");
+}
+function fleetLimit(r){
+  const hits=[];
+  (r.workers||[]).forEach(w=>{
+    const responses=w.responses||[];
+    for(let i=responses.length-1;i>=0;i--){
+      if(usageLimitResponse(responses[i].text)){ hits.push(responses[i].text.trim()); break; }
+    }
+  });
+  if(!hits.length)return null;
+  const reset=hits.map(s=>(s.match(/(?:resets?|try again)(?:\s+on)?(?:\s+at)?[^\n.]{0,90}/i)||[])[0]||"").find(Boolean);
+  return {workers:hits.length,reset};
+}
 function fleet(r,i){
-  const q=r.queue||{}, t=r.tokens_min||{}, tr=r.tokens_run||{}, p=r.parked||[];
+  const q=r.queue||{}, qs=r.queue_stored||{}, t=r.tokens_min||{}, tr=r.tokens_run||{}, p=r.parked||[];
   const backend=r.mode==="codex"?"Codex":r.mode==="tmux"?"Claude tmux":"Claude";
   const model=r.mode==="codex"?(r.model||"inherited"):"";
   const runtime=backend+(model?" · "+(model==="inherited"?"inherited model":model):"");
   const runtimeTitle=runtime+(r.reasoning?" · reasoning "+r.reasoning:"");
+  const limit=fleetLimit(r);
   const usd=v=>typeof v==="number" ? "$"+v.toFixed(2) : "—";
   const runTok=(tr.in||0)+(tr.out||0), runCost=usd(r.cost_run);   // this run only
-  const stats=[["open",q.open],["merged (done)",q.done],["in review",q.review],["parked",p.length],
-      ["Σ tokens",kfmt(runTok)],["est. cost",runCost],
-      ["↑ out/min",kfmt(t.out)],["↓ in/min",kfmt(t.in)]]
-    .map(([l,n])=>`<div class="ns-stat"><div class="n">${n??0}</div><div class="l">${esc(l)}</div></div>`).join("");
+  const queueBasis=`Live Nightshift queue derived from merge commits, review branches, leases, and holds; saved TODO frontmatter reports ${qs.open??'—'} open, ${qs.review??'—'} review, and ${qs.done??'—'} done`;
+  const statsRows=[["actionable open",q.open,queueBasis],["merged",q.done,queueBasis],["in review",q.review,queueBasis],
+      ["blocked",p.length,"Held tasks that need intervention; deliberate focus-parks are counted separately"]];
+  if(r.parked_count)statsRows.push(["parked",r.parked_count,"Tasks deliberately parked outside the active focus set"]);
+  statsRows.push(["new tokens",kfmt(runTok),"Non-cached input plus output tokens for this run"],
+      ["API equiv.",runCost,"Token-price API equivalent, not subscription spend, plan usage, or an invoice"]);
+  if(r.running)statsRows.push(["↑ out/min",kfmt(t.out)],["↓ in/min",kfmt(t.in)]);
+  const stats=statsRows.map(([l,n,title])=>`<div class="ns-stat"${title?` title="${esc(title)}"`:''}><div class="n">${n??0}</div><div class="l">${esc(l)}</div></div>`).join("");
+  const queueDrift=qs.open!=null&&(q.open!==qs.open||q.review!==qs.review||q.done!==qs.done);
+  const queueNote=queueDrift?`<div class="ns-queue-note">Nightshift sees <b>${q.open||0} actionable open</b> from Git state; saved TODO labels show <b>${qs.open||0} open</b>.</div>`:"";
   // A stopped run stays visible briefly for post-mortem, then blanks to a clean
   // slate; a new run (drag onto 🌙) clears the cards server-side via the run stamp.
   const BLANK_MS=5*60*1000;
@@ -314,19 +336,22 @@ function fleet(r,i){
   const blanked=!r.running && r.stopped_at && (Date.now()-Date.parse(r.stopped_at))>BLANK_MS;
   const terms=blanked ? idleMsg : ((r.workers||[]).map(w=>{
     let prev=null;
-    const body=(w.responses&&w.responses.length)
-      ? w.responses.map(msg=>{                       // one continuous feed, split into turns on session change
+    const responses=(w.responses||[]).filter(msg=>!usageLimitResponse(msg.text));
+    const body=responses.length
+      ? responses.map(msg=>{                       // one continuous feed, split into turns on session change
           const sep=(msg.sid&&msg.sid!==prev&&prev!==null)?'<div class="ns-sep">new turn</div>':"";
           prev=msg.sid;
           return `${sep}<div class="ns-msg"><span class="ns-ts">${esc(msg.t)}</span><span class="ns-mtext">${esc(msg.text)}</span></div>`;
         }).join("")
-      : '<div class="ns-empty">no responses yet — agent starting up or running tools</div>';
-    return `<div class="ns-term"><h3><span class="ns-dot ${esc(w.state)}"></span>W${w.i}<span class="ns-agent" title="${esc(runtimeTitle)}">${esc(runtime)}</span>
+      : `<div class="ns-empty">${limit?'No other retained responses.':r.running?'no responses yet — agent starting up or running tools':'No retained responses.'}</div>`;
+    const state=r.running?w.state:"stopped", stateLabel=r.running?w.state:"historical";
+    return `<div class="ns-term"><h3><span class="ns-dot ${esc(state)}"></span>W${w.i}<span class="ns-agent" title="${esc(runtimeTitle)}">${esc(runtime)}</span>
         <span class="ns-task">${esc(w.task||"—")}</span>
-        <span class="ns-rate">↑${kfmt(w.tout)}/min</span>
-        <span class="ns-state">${esc(w.state)}</span></h3>
+        ${r.running?`<span class="ns-rate">↑${kfmt(w.tout)}/min</span>`:""}
+        <span class="ns-state">${esc(stateLabel)}</span></h3>
       <div class="ns-msgs">${body}</div></div>`;
   }).join("") || idleMsg);
+  const limitBanner=limit?`<div class="ns-limit ${r.running?'active':'history'}"><b>${esc(backend)} account limit ${r.running?'detected':'encountered'}</b><span>${limit.workers>1?`${limit.workers} workers reported the same shared account quota`:'The worker reported the provider account quota'}${limit.reset?' · '+esc(limit.reset):''}</span></div>`:"";
   const merges=(r.nightshift||[]).map(l=>`<span class="ns-merge">${esc(l)}</span>`).join("\n") || "(nothing merged yet)";
   const log=(r.log||[]).map(esc).join("\n") || "(no log yet)";
   return `<div class="ns-run">
@@ -342,6 +367,8 @@ function fleet(r,i){
           <button class="ns-scale-btn" data-scale="${esc(r.project)}" data-dir="1">+</button></span>`}
         <button class="ns-stop" data-stop="${esc(r.project)}" title="Halt the whole fleet — orchestrator + workers — and release in-flight claims">Stop</button></div>`:""}</div>
     <div class="ns-stats">${stats}</div>
+    ${queueNote}
+    ${limitBanner}
     <div class="ns-panel"><h3>token throughput — out tokens/min</h3><canvas id="ns-chart-${i}" class="ns-chart"></canvas></div>
     <div class="ns-grid">${terms}</div>
     <div class="ns-cols">

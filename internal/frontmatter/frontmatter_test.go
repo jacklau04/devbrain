@@ -35,6 +35,20 @@ func TestSetFieldReplaceInPlace(t *testing.T) {
 	}
 }
 
+func TestRemoveField(t *testing.T) {
+	t.Parallel()
+	got := RemoveField(sample, "claimed_at")
+	if strings.Contains(got, "claimed_at:") {
+		t.Fatalf("field was not removed:\n%s", got)
+	}
+	if !strings.Contains(got, "claimed_by: dev@laptop\npr:") || !strings.Contains(got, "Prior art in table.go") {
+		t.Fatalf("neighboring fields or body changed:\n%s", got)
+	}
+	if again := RemoveField(got, "missing"); again != got {
+		t.Error("removing a missing field must be a no-op")
+	}
+}
+
 func TestSetFieldInsertsBeforeClosingFence(t *testing.T) {
 	t.Parallel()
 	got := SetField(sample, "done_at", "2026-06-21T00:00:00Z")

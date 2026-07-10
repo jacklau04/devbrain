@@ -198,13 +198,14 @@ func (o *Orch) EnsureBaseFixTask(detail string) {
 		return
 	}
 	const title = "NIGHTSHIFT IS RED — fix the failing test(s) to unblock all merges"
-	// Dedup on the EXACT title in a still-actionable state (anything but
-	// done/held). Whole-queue view (todoAll): an ONLY-scoped list can hide the
-	// existing fix task and file a duplicate every time the gate re-runs red.
+	// Dedup on the EXACT title unless Git proves an earlier fix already merged.
+	// A held fix is still the same incident: filing another one every reconcile
+	// cycle only creates duplicate work while the original waits for a human.
+	// Whole-queue view (todoAll): an ONLY-scoped list can hide the existing fix
+	// task and file a duplicate every time the gate re-runs red.
 	out, _ := o.todoAll("list", "all")
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, title) &&
-			!strings.Contains(line, "done") && !strings.Contains(line, "held") {
+		if strings.Contains(line, title) && !strings.Contains(line, "done") {
 			return
 		}
 	}

@@ -75,8 +75,8 @@ func TestNightshiftGate(t *testing.T) {
 		testCmd := `[ -z "$DEVBRAIN_TODO_ONLY" ] && [ -z "$DEVBRAIN_TODO_DERIVE_GIT" ]`
 		r := ns(
 			map[string]string{
-				"DEVBRAIN_TODO_ONLY":        "9999-nonexistent",
-				"DEVBRAIN_TODO_DERIVE_GIT":  "1",
+				"DEVBRAIN_TODO_ONLY":       "9999-nonexistent",
+				"DEVBRAIN_TODO_DERIVE_GIT": "1",
 			},
 			"run-gate", h.Data, "--test-cmd", testCmd,
 		)
@@ -226,6 +226,21 @@ func TestNightshiftGate(t *testing.T) {
 			"ensure-base-fix-task", "--detail", "detail", "--repo", base)
 		if n := redCount(); n != 1 {
 			t.Errorf("unbounded: red base files the fix task: count = %d, want 1", n)
+		}
+
+		// A stalled/held recovery task is still the same red-base incident. The
+		// old behavior excluded held rows from deduplication and filed one clone
+		// every reconcile pass.
+		entries, err := os.ReadDir(filepath.Join(h2.Data, "projects", "test__repo", "todo"))
+		if err != nil || len(entries) != 1 {
+			t.Fatalf("read red task: entries=%d err=%v", len(entries), err)
+		}
+		redID := strings.TrimSuffix(entries[0].Name(), ".md")
+		h2.Run("todo", "hold", redID, "stalled: needs intervention")
+		h2.RunWith(clitest.RunOpts{}, "nightshift", "internal",
+			"ensure-base-fix-task", "--detail", "detail", "--repo", base)
+		if n := redCount(); n != 1 {
+			t.Errorf("held red-base task suppresses duplicate: count = %d, want 1", n)
 		}
 
 		// Dedup must read the WHOLE queue — an ONLY-scoped view hides the existing task.

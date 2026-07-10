@@ -72,7 +72,7 @@ func TestDocKeySetMatchesFixture(t *testing.T) {
 	if !reflect.DeepEqual(keySet(want), keySet(got)) {
 		t.Errorf("top-level keys differ:\n want %v\n got  %v", keySet(want), keySet(got))
 	}
-	for _, sub := range []string{"queue", "tokens_min", "tokens_run"} {
+	for _, sub := range []string{"queue", "queue_stored", "tokens_min", "tokens_run"} {
 		if !reflect.DeepEqual(keySet(want[sub].(map[string]any)), keySet(got[sub].(map[string]any))) {
 			t.Errorf("%s keys differ", sub)
 		}
@@ -153,6 +153,7 @@ func TestEmitHeadlessReconstruction(t *testing.T) {
 		}
 		return ""
 	}
+	e.TodoStoredOutput = e.TodoOutput
 	fixed := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
 	old := Now
 	Now = func() time.Time { return fixed }
@@ -228,6 +229,7 @@ func TestCountScopedToOnlySet(t *testing.T) {
 				"  [  5] done    0003-gamma  Gamma\n" +
 				"  [  1] review  0004-delta  Delta\n"
 		}
+		e.TodoStoredOutput = e.TodoOutput
 		return e
 	}
 
@@ -249,6 +251,22 @@ func TestCountScopedToOnlySet(t *testing.T) {
 	}
 }
 
+func TestStoredAndDerivedQueueCountsRemainDistinct(t *testing.T) {
+	e := NewEmitter(t.TempDir())
+	e.TodoOutput = func(...string) string {
+		return "queue: p (all)\n  [ 10] open  0001-alpha  Alpha\n  [  9] open  0002-beta  Beta\n"
+	}
+	e.TodoStoredOutput = func(...string) string {
+		return "queue: p (all)\n  [ 10] done  0001-alpha  Alpha\n  [  9] open  0002-beta  Beta\n"
+	}
+	if got := e.count("open", nil); got != 2 {
+		t.Fatalf("derived open = %d, want 2", got)
+	}
+	if got := e.countStored("open", nil); got != 1 {
+		t.Fatalf("stored open = %d, want 1", got)
+	}
+}
+
 // The emit loop reuses one Emitter across ticks, so the queue counts must be
 // re-read each Emit — a cached row set would freeze open/done/review at the
 // run-start snapshot while workers merge tasks.
@@ -264,6 +282,7 @@ func TestEmitRereadsQueueEachTick(t *testing.T) {
 		}
 		return ""
 	}
+	e.TodoStoredOutput = e.TodoOutput
 	fixed := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
 	old := Now
 	Now = func() time.Time { return fixed }
@@ -302,6 +321,7 @@ func TestProcessWorkerUsesTurnPidAndTurnLogResponses(t *testing.T) {
 	e := NewEmitter(repo)
 	e.ClaudeProjects = t.TempDir()
 	e.TodoOutput = func(...string) string { return "" }
+	e.TodoStoredOutput = e.TodoOutput
 	if _, err := e.Emit(); err != nil {
 		t.Fatal(err)
 	}
@@ -343,6 +363,7 @@ func TestWorkerCardsScopedToRunStamp(t *testing.T) {
 	e := NewEmitter(repo)
 	e.ClaudeProjects = t.TempDir()
 	e.TodoOutput = func(...string) string { return "" }
+	e.TodoStoredOutput = e.TodoOutput
 	fixed := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
 	old := Now
 	Now = func() time.Time { return fixed }

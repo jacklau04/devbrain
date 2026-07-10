@@ -10,6 +10,12 @@
   "open": 3,
   "review": 1
  },
+ "queue_stored": {
+  "done": 1,
+  "open": 3,
+  "review": 1
+ },
+ "queue_basis": "git-derived",
  "tokens_min": {
   "in": 1200,
   "out": 400

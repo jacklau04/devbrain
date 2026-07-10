@@ -56,6 +56,26 @@ func SetField(content, key, value string) string {
 	return strings.Join(out, "\n")
 }
 
+// RemoveField deletes a field from the first frontmatter block without
+// rewriting or reordering any other line. Missing fields are a no-op.
+func RemoveField(content, key string) string {
+	lines := splitKeep(content)
+	out := make([]string, 0, len(lines))
+	n := 0
+	for _, line := range lines {
+		if fence(line) {
+			n++
+			out = append(out, line)
+			continue
+		}
+		if n == 1 && strings.HasPrefix(line, key+":") {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
 // Task is queue.py's parsed view of a task file.
 type Task struct {
 	FM    map[string]string

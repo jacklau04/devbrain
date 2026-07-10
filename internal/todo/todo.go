@@ -53,7 +53,7 @@ Tasks are created by /distill and worked by /continue — this CLI is the substr
   todo approve <id>                        greenlight: set approved:true + reopen (worker may download/install/network)
   todo done <id> [--force]                close it (only after the PR merges); stamps done_at.
                                           Refuses without a recorded pr: unless --force
-                                          (nightshift direct-merge, won't-do)
+                                          (nightshift direct-merge, won't-do; stays terminal in Git-derived views)
   todo archive [days]                     move done tasks older than N days (default 30) into archive/ (off list; dashboard folds them)
   todo self-heal [status...]              close open/taken tasks whose recorded PR has merged (zombie sweep)
   todo release <id>                       taken/review/held -> open (un-claim / un-hold)
@@ -434,10 +434,10 @@ func (c *cli) effectiveStatus(t *task.Task, id string) string {
 	if st == "held" {
 		return "held"
 	}
-	// A logged backfill (origin: backfill) is terminal done — it records
-	// already-shipped work and has no nightshift merge, so the derived view
-	// must not downgrade it to open and hand it back to a worker.
-	if st == "done" && t.Raw("origin") == "backfill" {
+	// A logged backfill or an explicit `done --force` is terminal done. Both
+	// deliberately lack nightshift merge evidence, so the derived view must not
+	// downgrade them to open and hand them back to a worker.
+	if st == "done" && (t.Raw("origin") == "backfill" || t.Raw("done_forced") == "true") {
 		return "done"
 	}
 	c.deriveInit()
@@ -1035,7 +1035,16 @@ func (c *cli) doneVerb(args []string) int {
 		return c.die(id + " has no recorded PR — open one and `todo review " + id + " <pr-url>` first, or `todo done " + id + " --force` for work that legitimately has none")
 	}
 	content = frontmatter.SetField(content, "status", "done")
-	content = frontmatter.SetField(content, "done_at", nowStamp())
+	if force {
+		content = frontmatter.SetField(content, "done_forced", "true")
+	} else if _, ok := frontmatter.Parse(content).FM["done_forced"]; ok {
+		content = frontmatter.RemoveField(content, "done_forced")
+	}
+	// Reasserting an already-complete task (for example, adding the durable
+	// --force marker to legacy data) must not rewrite its historical finish time.
+	if task.Parse(content, c.project).DoneAt == "" {
+		content = frontmatter.SetField(content, "done_at", nowStamp())
+	}
 	if err := c.writeTask(id, content); err != nil {
 		return c.die(err.Error())
 	}
@@ -1156,6 +1165,9 @@ func clearOnReopen(content string) string {
 	content = frontmatter.SetField(content, "pr", "")
 	content = frontmatter.SetField(content, "done_at", "")
 	content = frontmatter.SetField(content, "reason", "")
+	if _, ok := frontmatter.Parse(content).FM["done_forced"]; ok {
+		content = frontmatter.RemoveField(content, "done_forced")
+	}
 	// A reopened backfill is now a real unit of work — drop origin so audit
 	// stops exempting it from the delegated-run rubric. Only when present, so a
 	// normal task's reopen doesn't gain a stray empty origin: line (SetField
