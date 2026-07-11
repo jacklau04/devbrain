@@ -104,8 +104,11 @@ async function updateDiag(){
     if(d.project_mismatch) bits.push(`cwd maps to <code>${esc(d.cwd_project||"none")}</code>`);
     if(d.raw&&d.raw.count===0) bits.push("no raw logs for this project");
     if(d.distill&&d.distill.pending_count) bits.push(`${d.distill.pending_count} pending distill file${d.distill.pending_count===1?"":"s"}`);
+    if(d.codex_hooks&&d.codex_hooks.registered&&!d.codex_hooks.feature_enabled) bits.push("Codex hooks disabled");
+    else if(d.codex_hooks&&(d.codex_hooks.pending_trust||d.codex_hooks.modified)) bits.push("Codex hooks need /hooks trust review");
+    else if(d.codex_hooks&&d.codex_hooks.disabled) bits.push(`${d.codex_hooks.disabled} Codex hook${d.codex_hooks.disabled===1?"":"s"} disabled`);
     if(d.gbrain&&!d.gbrain.available) bits.push("gbrain unavailable");
-    else if(d.gbrain&&d.gbrain.sources_ok&&!d.gbrain.source_has_data) bits.push("gbrain source mismatch");
+    else if(d.gbrain&&d.gbrain.sources_ok&&!d.gbrain.index_current) bits.push(`${d.gbrain.missing_pages} brain page${d.gbrain.missing_pages===1?"":"s"} missing from gbrain`);
     b.innerHTML=`<strong>Context check</strong>${esc(d.diagnosis||"check context routing")}${bits.length?` · ${bits.join(" · ")}`:""}`;
     b.hidden=false;
   }catch{

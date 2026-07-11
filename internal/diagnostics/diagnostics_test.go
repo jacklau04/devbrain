@@ -34,6 +34,7 @@ func writeFile(t *testing.T, path, content string) {
 }
 
 func TestReportDataRawLogsAndPendingDistill(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
 	data := t.TempDir()
 	cwd := initRepo(t, "git@github.com:acme/widget.git")
 	t.Setenv("DEVBRAIN_DATA", data)
@@ -66,6 +67,7 @@ func TestReportDataRawLogsAndPendingDistill(t *testing.T) {
 }
 
 func TestReportDataDashboardProjectMismatch(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
 	data := t.TempDir()
 	cwd := initRepo(t, "git@github.com:acme/widget.git")
 	t.Setenv("DEVBRAIN_DATA", data)
@@ -86,6 +88,7 @@ func TestReportDataDashboardProjectMismatch(t *testing.T) {
 }
 
 func TestReportDataMissingLedgerMarksAllRawLogsPending(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
 	data := t.TempDir()
 	cwd := initRepo(t, "git@github.com:acme/widget.git")
 	t.Setenv("DEVBRAIN_DATA", data)
@@ -105,6 +108,7 @@ func TestReportDataMissingLedgerMarksAllRawLogsPending(t *testing.T) {
 }
 
 func TestReportDataLedgerOnlyMarksNewerFilesPending(t *testing.T) {
+	t.Setenv("CODEX_HOME", t.TempDir())
 	data := t.TempDir()
 	cwd := initRepo(t, "git@github.com:acme/widget.git")
 	t.Setenv("DEVBRAIN_DATA", data)
@@ -119,6 +123,56 @@ func TestReportDataLedgerOnlyMarksNewerFilesPending(t *testing.T) {
 	r := ReportData(DataOptions{CWD: cwd})
 	if r.Distill.PendingCount != 1 || r.Distill.Pending[0].RelPath != "2026-07-09/main.s2.md" {
 		t.Fatalf("want only newer file pending, got %+v", r.Distill.Pending)
+	}
+}
+
+func TestReportDataExplainsUntrustedCodexHooks(t *testing.T) {
+	data := t.TempDir()
+	codexHome := t.TempDir()
+	cwd := initRepo(t, "git@github.com:acme/widget.git")
+	t.Setenv("DEVBRAIN_DATA", data)
+	t.Setenv("DEVBRAIN_GBRAIN", "gbrain-test-not-installed")
+	t.Setenv("CODEX_HOME", codexHome)
+	writeFile(t, filepath.Join(data, "projects", "acme__widget", "log", "2026-07-11", "main.s1.md"),
+		"## 12:00:00\n\nlatest\n")
+	writeFile(t, filepath.Join(data, "projects", "acme__widget", "brain", "status.md"), "# Status\n")
+	writeFile(t, filepath.Join(codexHome, "hooks.json"), codexHooksFixture)
+	writeFile(t, filepath.Join(codexHome, "config.toml"), "[features]\nhooks = true\n")
+
+	r := ReportData(DataOptions{CWD: cwd})
+	if r.CodexHooks.PendingTrust != 4 {
+		t.Fatalf("Codex hook report = %+v", r.CodexHooks)
+	}
+	if !contains(r.Warnings, "Codex devbrain hooks are awaiting review/trust") {
+		t.Fatalf("missing hook trust warning: %v", r.Warnings)
+	}
+	if !strings.Contains(r.Diagnosis, "not trusted") || !strings.Contains(r.Diagnosis, "/hooks") {
+		t.Fatalf("diagnosis should explain skipped capture: %q", r.Diagnosis)
+	}
+}
+
+func TestReportDataChecksCanonicalGBrainPages(t *testing.T) {
+	data := t.TempDir()
+	codexHome := t.TempDir()
+	bin := t.TempDir()
+	cwd := initRepo(t, "git@github.com:acme/widget.git")
+	t.Setenv("DEVBRAIN_DATA", data)
+	t.Setenv("CODEX_HOME", codexHome)
+	writeFile(t, filepath.Join(data, "projects", "acme__widget", "brain", "status.md"), "# Status\n")
+	writeFile(t, filepath.Join(data, "projects", "acme__widget", "brain", "acme__widget-decisions.md"), "# Decisions\n")
+	gbrain := filepath.Join(bin, "gbrain")
+	writeFile(t, gbrain, "#!/bin/sh\nprintf 'acme__widget/status\\tconcept\\nacme__widget/decisions\\tconcept\\n'\n")
+	if err := os.Chmod(gbrain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DEVBRAIN_GBRAIN", gbrain)
+
+	r := ReportData(DataOptions{CWD: cwd})
+	if !r.GBrain.Available || !r.GBrain.IndexCurrent || r.GBrain.IndexedPages != 2 || r.GBrain.MissingPages != 0 {
+		t.Fatalf("gbrain report = %+v", r.GBrain)
+	}
+	if contains(r.Warnings, "gbrain index is missing selected-project brain pages") {
+		t.Fatalf("healthy canonical pages should not warn: %v", r.Warnings)
 	}
 }
 

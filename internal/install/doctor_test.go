@@ -2,11 +2,14 @@ package install
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/TheWeiHu/devbrain/internal/diagnostics"
 )
 
 func doctor(t *testing.T, args ...string) (string, int) {
@@ -84,6 +87,25 @@ func TestDoctorDataCLI(t *testing.T) {
 	out, rc = doctor(t, "data", "--cwd", repo, "--project", "acme__widget", "--json")
 	if rc != 0 || !strings.Contains(out, `"selected_project": "acme__widget"`) {
 		t.Fatalf("doctor data json failed (rc=%d):\n%s", rc, out)
+	}
+}
+
+func TestRenderDataReportCapsPendingFiles(t *testing.T) {
+	r := diagnostics.DataReport{Distill: diagnostics.DistillReport{PendingCount: 12}}
+	for i := 0; i < 12; i++ {
+		r.Distill.Pending = append(r.Distill.Pending, diagnostics.PendingFile{
+			RelPath: fmt.Sprintf("2026-07-11/session-%02d.md", i),
+			Day:     "2026-07-11",
+			Newest:  "12:00:00",
+		})
+	}
+	var out bytes.Buffer
+	renderDataReport(&out, r)
+	if got := strings.Count(out.String(), " -> "); got != 10 {
+		t.Fatalf("rendered %d pending rows, want 10:\n%s", got, out.String())
+	}
+	if !strings.Contains(out.String(), "2 older pending file(s) omitted; --json lists all") {
+		t.Fatalf("missing omitted-count guidance:\n%s", out.String())
 	}
 }
 

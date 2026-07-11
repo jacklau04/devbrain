@@ -1,6 +1,6 @@
 // Package diagnostics holds read-only health checks that explain where a
 // project's context pipeline currently stands: capture logs, distill cursor,
-// brain pages, gbrain source sync, and the Homebrew tap used for upgrades.
+// brain pages, gbrain indexing, and the Homebrew tap used for upgrades.
 package diagnostics
 
 import (
@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,7 +24,6 @@ var (
 	commandContext = exec.CommandContext
 	entryRe        = regexp.MustCompile(`(?m)^## ([0-9]{2}:[0-9]{2}:[0-9]{2})\b`)
 	timeRe         = regexp.MustCompile(`[0-9]{2}:[0-9]{2}:[0-9]{2}`)
-	lastSyncRe     = regexp.MustCompile(`last sync\s+([^\s]+)`)
 	conflictRe     = regexp.MustCompile(`(?m)^(<<<<<<<|=======|>>>>>>>)`)
 )
 
@@ -34,23 +34,25 @@ type DataOptions struct {
 	CWD          string
 	Project      string
 	DashboardURL string
+	CodexHome    string
 }
 
 // DataReport is the stable JSON shape for `devbrain doctor data`.
 type DataReport struct {
-	DataDir         string        `json:"data_dir"`
-	CWD             string        `json:"cwd"`
-	CWDProject      string        `json:"cwd_project"`
-	SelectedProject string        `json:"selected_project"`
-	ProjectSource   string        `json:"project_source"`
-	ProjectMismatch bool          `json:"project_mismatch"`
-	Raw             RawReport     `json:"raw"`
-	Distill         DistillReport `json:"distill"`
-	Brain           BrainReport   `json:"brain"`
-	GBrain          GBrainReport  `json:"gbrain"`
-	Warnings        []string      `json:"warnings"`
-	Failures        []string      `json:"failures"`
-	Diagnosis       string        `json:"diagnosis"`
+	DataDir         string           `json:"data_dir"`
+	CWD             string           `json:"cwd"`
+	CWDProject      string           `json:"cwd_project"`
+	SelectedProject string           `json:"selected_project"`
+	ProjectSource   string           `json:"project_source"`
+	ProjectMismatch bool             `json:"project_mismatch"`
+	Raw             RawReport        `json:"raw"`
+	Distill         DistillReport    `json:"distill"`
+	Brain           BrainReport      `json:"brain"`
+	GBrain          GBrainReport     `json:"gbrain"`
+	CodexHooks      CodexHooksReport `json:"codex_hooks"`
+	Warnings        []string         `json:"warnings"`
+	Failures        []string         `json:"failures"`
+	Diagnosis       string           `json:"diagnosis"`
 }
 
 type RawReport struct {
@@ -87,6 +89,10 @@ type GBrainReport struct {
 	SourcesOK     bool   `json:"sources_ok"`
 	SourceHasData bool   `json:"source_has_data"`
 	LastSync      string `json:"last_sync"`
+	LocalPages    int    `json:"local_pages"`
+	IndexedPages  int    `json:"indexed_pages"`
+	MissingPages  int    `json:"missing_pages"`
+	IndexCurrent  bool   `json:"index_current"`
 	Output        string `json:"output"`
 	Error         string `json:"error"`
 }
@@ -129,7 +135,8 @@ func ReportData(opts DataOptions) DataReport {
 	r.Raw = rawReport(data, selected)
 	r.Distill = distillReport(data, selected)
 	r.Brain = brainReport(data, selected)
-	r.GBrain = gbrainReport(data)
+	r.GBrain = gbrainReport(data, selected)
+	r.CodexHooks = ReportCodexHooks(opts.CodexHome)
 
 	if r.ProjectMismatch {
 		r.Warnings = append(r.Warnings, "selected project differs from cwd project")
@@ -142,8 +149,20 @@ func ReportData(opts DataOptions) DataReport {
 	}
 	if !r.GBrain.Available {
 		r.Warnings = append(r.Warnings, "gbrain not on PATH")
-	} else if r.GBrain.SourcesOK && !r.GBrain.SourceHasData {
-		r.Warnings = append(r.Warnings, "gbrain sources do not mention the devbrain data repo")
+	} else if r.GBrain.SourcesOK && !r.GBrain.IndexCurrent {
+		r.Warnings = append(r.Warnings, "gbrain index is missing selected-project brain pages")
+	}
+	if r.CodexHooks.Configured && r.CodexHooks.Registered > 0 {
+		switch {
+		case r.CodexHooks.Error != "":
+			r.Warnings = append(r.Warnings, "Codex hook state could not be read")
+		case !r.CodexHooks.FeatureEnabled:
+			r.Warnings = append(r.Warnings, "Codex hooks feature is disabled")
+		case r.CodexHooks.PendingTrust+r.CodexHooks.Modified > 0:
+			r.Warnings = append(r.Warnings, "Codex devbrain hooks are awaiting review/trust")
+		case r.CodexHooks.Disabled > 0:
+			r.Warnings = append(r.Warnings, "Codex devbrain hooks are disabled")
+		}
 	}
 	r.Diagnosis = diagnoseData(r)
 	return r
@@ -264,7 +283,7 @@ func brainReport(data, project string) BrainReport {
 	return BrainReport{Dir: dir, Count: len(files)}
 }
 
-func gbrainReport(data string) GBrainReport {
+func gbrainReport(data, project string) GBrainReport {
 	name := os.Getenv("DEVBRAIN_GBRAIN")
 	if name == "" {
 		name = "gbrain"
@@ -275,7 +294,12 @@ func gbrainReport(data string) GBrainReport {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := commandContext(ctx, gb, "sources", "list").CombinedOutput()
+	want := canonicalBrainSlugs(data, project)
+	limit := len(want) * 2
+	if limit < 100 {
+		limit = 100
+	}
+	out, err := commandContext(ctx, gb, "list", "--tag", project, "-n", strconv.Itoa(limit)).CombinedOutput()
 	text := strings.TrimSpace(string(out))
 	r := GBrainReport{Available: true, Binary: gb, Output: text}
 	if err != nil {
@@ -283,12 +307,32 @@ func gbrainReport(data string) GBrainReport {
 		return r
 	}
 	r.SourcesOK = true
-	dataAbs := resolve(data)
-	r.SourceHasData = strings.Contains(text, data) || strings.Contains(text, dataAbs)
-	if m := lastSyncRe.FindStringSubmatch(text); m != nil {
-		r.LastSync = m[1]
+	r.LocalPages = len(want)
+	listed := map[string]bool{}
+	for _, line := range strings.Split(text, "\n") {
+		if fields := strings.Fields(line); len(fields) > 0 {
+			listed[fields[0]] = true
+		}
 	}
+	for _, slug := range want {
+		if listed[slug] {
+			r.IndexedPages++
+		}
+	}
+	r.MissingPages = r.LocalPages - r.IndexedPages
+	r.IndexCurrent = r.MissingPages == 0
+	r.SourceHasData = r.IndexedPages > 0
 	return r
+}
+
+func canonicalBrainSlugs(data, project string) []string {
+	files, _ := filepath.Glob(filepath.Join(data, "projects", project, "brain", "*.md"))
+	slugs := make([]string, 0, len(files))
+	for _, file := range files {
+		base := strings.TrimSuffix(filepath.Base(file), ".md")
+		slugs = append(slugs, project+"/"+strings.TrimPrefix(base, project+"-"))
+	}
+	return slugs
 }
 
 func diagnoseData(r DataReport) string {
@@ -300,6 +344,16 @@ func diagnoseData(r DataReport) string {
 			return "capture logs exist, but the selected project differs from the cwd-derived project"
 		}
 		return "selected project differs from cwd-derived project and no raw logs were found there"
+	}
+	if r.CodexHooks.Configured && r.CodexHooks.Registered > 0 {
+		switch {
+		case !r.CodexHooks.FeatureEnabled:
+			return "Codex devbrain hooks are registered but the hooks feature is disabled; run 'codex features enable hooks'"
+		case r.CodexHooks.PendingTrust+r.CodexHooks.Modified > 0:
+			return "Codex devbrain hooks are registered but not trusted, so Codex skips capture; open Codex and run /hooks"
+		case r.CodexHooks.Disabled > 0:
+			return "Codex devbrain hooks are registered but disabled; open Codex and run /hooks"
+		}
 	}
 	if r.Raw.Count == 0 {
 		return "no raw logs found for the selected project; capture may be routed elsewhere or not wired"
@@ -313,8 +367,8 @@ func diagnoseData(r DataReport) string {
 	if !r.GBrain.Available {
 		return "capture logs and brain pages exist; gbrain is unavailable so search may use only fallback reads"
 	}
-	if r.GBrain.SourcesOK && !r.GBrain.SourceHasData {
-		return "capture logs and brain pages exist; gbrain sources do not mention the devbrain data repo"
+	if r.GBrain.SourcesOK && !r.GBrain.IndexCurrent {
+		return "capture logs and brain pages exist; gbrain is missing selected-project brain pages"
 	}
 	return "context diagnostics look healthy for the selected project"
 }

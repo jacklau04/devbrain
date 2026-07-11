@@ -18,7 +18,7 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 	t.Helper()
 	q := newTestQueue(t)
 	seedThree(t, q)
-	srv := &Server{Q: q, Dashboard: []byte("<html><body>dash</body></html>"), Port: 8799}
+	srv := &Server{Q: q, Dashboard: []byte("<html><body>dash</body></html>"), Port: 8799, CodexHome: t.TempDir()}
 	ts := httptest.NewServer(srv)
 	t.Cleanup(ts.Close)
 	return srv, ts
@@ -164,6 +164,9 @@ func TestHTTPDiagnostics(t *testing.T) {
 	distill := diag["distill"].(map[string]any)
 	if distill["pending_count"].(json.Number).String() != "1" {
 		t.Fatalf("distill pending = %+v", distill)
+	}
+	if _, ok := diag["codex_hooks"].(map[string]any); !ok {
+		t.Fatalf("missing codex_hooks diagnostics: %+v", diag)
 	}
 
 	_, mismatch := getJSON(t, ts.URL+"/api/diagnostics?project=proj__b")

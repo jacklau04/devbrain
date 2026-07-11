@@ -68,7 +68,13 @@ func renderDataReport(w io.Writer, r diagnostics.DataReport) {
 		fmt.Fprintf(w, "  distill ledger:   WARN missing at %s\n", display(r.Distill.LedgerPath, home))
 	}
 	fmt.Fprintf(w, "  pending distill:  %d file(s)\n", r.Distill.PendingCount)
-	for _, p := range r.Distill.Pending {
+	pending := r.Distill.Pending
+	const maxPendingRows = 10
+	if omitted := len(pending) - maxPendingRows; omitted > 0 {
+		fmt.Fprintf(w, "    ... %d older pending file(s) omitted; --json lists all\n", omitted)
+		pending = pending[omitted:]
+	}
+	for _, p := range pending {
 		cursor := p.Cursor
 		if cursor == "" {
 			cursor = "START"
@@ -76,19 +82,29 @@ func renderDataReport(w io.Writer, r diagnostics.DataReport) {
 		fmt.Fprintf(w, "    - %s -> %s %s (after %s)\n", p.RelPath, p.Day, p.Newest, cursor)
 	}
 	fmt.Fprintf(w, "  brain pages:      %d file(s)\n", r.Brain.Count)
+	if r.CodexHooks.Configured && r.CodexHooks.Registered > 0 {
+		switch {
+		case r.CodexHooks.Error != "":
+			fmt.Fprintf(w, "  Codex capture:    WARN %s\n", r.CodexHooks.Error)
+		case !r.CodexHooks.FeatureEnabled:
+			fmt.Fprintln(w, "  Codex capture:    WARN hooks feature disabled — run 'codex features enable hooks'")
+		case r.CodexHooks.PendingTrust+r.CodexHooks.Modified > 0:
+			fmt.Fprintf(w, "  Codex capture:    WARN %d/%d hook(s) need review — run /hooks in Codex\n", r.CodexHooks.PendingTrust+r.CodexHooks.Modified, r.CodexHooks.Registered)
+		case r.CodexHooks.Disabled > 0:
+			fmt.Fprintf(w, "  Codex capture:    WARN %d/%d hook(s) disabled — run /hooks in Codex\n", r.CodexHooks.Disabled, r.CodexHooks.Registered)
+		default:
+			fmt.Fprintf(w, "  Codex capture:    PASS %d/%d hook(s) trusted\n", r.CodexHooks.Trusted, r.CodexHooks.Registered)
+		}
+	}
 	switch {
 	case !r.GBrain.Available:
 		fmt.Fprintf(w, "  gbrain:           WARN unavailable (%s)\n", r.GBrain.Error)
 	case !r.GBrain.SourcesOK:
-		fmt.Fprintf(w, "  gbrain:           WARN sources list failed (%s)\n", r.GBrain.Error)
-	case !r.GBrain.SourceHasData:
-		fmt.Fprintln(w, "  gbrain:           WARN sources list does not mention the devbrain data repo")
+		fmt.Fprintf(w, "  gbrain:           WARN page list failed (%s)\n", r.GBrain.Error)
+	case !r.GBrain.IndexCurrent:
+		fmt.Fprintf(w, "  gbrain:           WARN %d/%d selected-project brain page(s) indexed\n", r.GBrain.IndexedPages, r.GBrain.LocalPages)
 	default:
-		sync := r.GBrain.LastSync
-		if sync == "" {
-			sync = "unknown sync time"
-		}
-		fmt.Fprintf(w, "  gbrain:           PASS source registered, last sync %s\n", sync)
+		fmt.Fprintf(w, "  gbrain:           PASS %d/%d selected-project brain page(s) indexed\n", r.GBrain.IndexedPages, r.GBrain.LocalPages)
 	}
 	fmt.Fprintln(w)
 	for _, f := range r.Failures {

@@ -44,6 +44,7 @@ type Server struct {
 	DashJS    []byte
 	Port      int
 	CWD       string
+	CodexHome string
 }
 
 // NewServer wires the embedded dashboard to a queue.
@@ -177,9 +178,10 @@ func (s *Server) doGET(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(raw, "/api/diagnostics"):
 		qs := rawQuery(raw)
 		s.sendJSON(w, 200, diagnostics.ReportData(diagnostics.DataOptions{
-			DataDir: s.Q.Data,
-			CWD:     s.CWD,
-			Project: qs.Get("project"),
+			DataDir:   s.Q.Data,
+			CWD:       s.CWD,
+			Project:   qs.Get("project"),
+			CodexHome: s.CodexHome,
 		}))
 	case strings.HasPrefix(raw, "/api/nightshift/resolve"): // where would a launch run + is one going?
 		qs := rawQuery(raw)
