@@ -760,7 +760,9 @@ function chGbrain(){
   // term and the count you get clicking it always agree.
   const wf={};
   g.forEach(r=>{ if(!r.q||/[$`]/.test(r.q)) return;
-    gbToks(r.q).forEach(w=>{ if(!STOP.has(w)) wf[w]=(wf[w]||0)+1; }); });
+    // Count each term at most once per query so the cloud size equals the distinct queries
+    // selectGbQueries lists on click — a term repeated in one query mustn't inflate it.
+    new Set(gbToks(r.q).filter(w=>!STOP.has(w))).forEach(w=>{ wf[w]=(wf[w]||0)+1; }); });
   const words=Object.entries(wf).sort((a,b)=>b[1]-a[1]).slice(0,40);
   const box=$('pf-gbw'); box.innerHTML=''; $('pf-c-gbw').textContent = words.length?`${words.length} terms`:'';
   if(!words.length){ box.innerHTML='<div class="hint" style="padding:0">no gbrain searches in this window.</div>'; return; }
@@ -1349,7 +1351,10 @@ function selectWord(w){clearSel();
 // matching queries (with project + when), not your prose.
 function selectGbQueries(w){clearSel();
   const from=$('pf-from').value, to=$('pf-to').value;
-  const list=GB.filter(r=>r.q&&gbToks(r.q).includes(w)&&(!from||r.date>=from)&&(!to||r.date<=to))
+  // Skip shell-looking queries exactly as the cloud does (chGbrain) so this list's length
+  // matches the term's cloud count — otherwise a term in both a normal and a $/backtick query
+  // would count 1 in the cloud but list 2 here.
+  const list=GB.filter(r=>r.q&&!/[$`]/.test(r.q)&&gbToks(r.q).includes(w)&&(!from||r.date>=from)&&(!to||r.date<=to))
     .map(r=>({p:r.p,date:r.date,time:(r.ts||'').slice(11,16),x:r.q,kind:'gbrain',
               hit:(r.hits||0)>0,hits:r.hits||0,_l:(r.q||'').toLowerCase()}));
   const hitN=list.filter(r=>r.hit).length, rate=list.length?Math.round(100*hitN/list.length):0;
@@ -1382,7 +1387,10 @@ function buildWords(){
   const wf={};
   P.forEach(p=>{
     const t = p.kind==='command' ? (p._l||'').replace(SKILL_RE,'') : p._l;
-    (t.match(/[a-z][a-z'+\-]{2,}/g)||[]).forEach(w=>{if(!STOP.has(w))wf[w]=(wf[w]||0)+1;});
+    // Count each word at most once per prompt: the cloud size + tooltip must equal the
+    // number of prompts you get clicking it (selectWord lists DISTINCT prompts), so a word
+    // repeated within one prompt mustn't inflate its count.
+    new Set((t.match(/[a-z][a-z'+\-]{2,}/g)||[]).filter(w=>!STOP.has(w))).forEach(w=>{wf[w]=(wf[w]||0)+1;});
   });
   WORDS=Object.entries(wf).sort((a,b)=>b[1]-a[1]).slice(0,46);
 }
