@@ -37,10 +37,12 @@ jobs:
       # build the binary and drive it as a subprocess (internal/clitest). The
       # docker clean-room test runs where docker exists (ubuntu) and t.Skip
       # cleanly otherwise (macos).
+      # Via `make test`, not a bare `go test`, so CI runs under the same git
+      # sandbox + config canary as a local run (scripts/test-guard.sh).
       - name: Go vet + full test suite
         env:
           DEVBRAIN_TEST_REQUIRE: ${{ matrix.require }}
-        run: go vet ./... && go test -race ./...
+        run: make test GOTESTFLAGS=-race
 
   # PRs into main must ship tests with code: a diff that touches Go source but no
   # *_test.go / testdata files fails, unless the PR carries the `no-tests-needed`

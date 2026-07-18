@@ -291,6 +291,14 @@ function renderMonitor(){
   m.querySelectorAll(".ns-msgs").forEach(el=>{ el.scrollTop=el.scrollHeight; });   // keep each feed at the latest
   tickStale();   // truthful staleness badge on first paint, not the "live" placeholder
 }
+// Paused-on-a-usage-limit is a normal state, not a dead fleet — say so, and when it retries.
+function backoffNote(b){
+  if(!b||!b.since) return "";
+  const until=b.until?Date.parse(b.until):NaN;
+  const left=isNaN(until)?null:Math.max(0,Math.round((until-Date.now())/60000));
+  const when=left===null?"":`retry in ~${left} min`;
+  return `<div class="ns-backoff">⏳ paused — ${esc(b.reason||"usage limit")}; no new turns launch until it clears<span class="when">${esc(when)}</span></div>`;
+}
 function fleet(r,i){
   const q=r.queue||{}, t=r.tokens_min||{}, tr=r.tokens_run||{}, p=r.parked||[];
   const usd=v=>typeof v==="number" ? "$"+v.toFixed(2) : "—";
@@ -333,6 +341,7 @@ function fleet(r,i){
           <span class="ns-scale-n">${(r.workers||[]).length}<span class="ns-scale-u">worker${(r.workers||[]).length===1?"":"s"}</span></span>
           <button class="ns-scale-btn" data-scale="${esc(r.project)}" data-dir="1">+</button></span>`}
         <button class="ns-stop" data-stop="${esc(r.project)}" title="Halt the whole fleet — orchestrator + workers — and release in-flight claims">Stop</button></div>`:""}</div>
+    ${backoffNote(r.backoff)}
     <div class="ns-stats">${stats}</div>
     <div class="ns-panel"><h3>token throughput — out tokens/min</h3><canvas id="ns-chart-${i}" class="ns-chart"></canvas></div>
     <div class="ns-grid">${terms}</div>
@@ -441,7 +450,7 @@ function openLaunch(tasks){
         const tilde=p=>p.replace(/^\/Users\/[^/]+/,"~").replace(/^\/home\/[^/]+/,"~");
         if(!r.repo) el.innerHTML='⚠ repo unknown — open one session in that repo first';
         else if(r.running) el.innerHTML='⚠ already running — stop it first';
-        else el.innerHTML='<code>'+esc(tilde(r.repo))+'</code>'+(r.cloned?'':' · clones from main')+' · spends tokens, unattended';
+        else el.innerHTML='<code>'+esc(tilde(r.repo))+'</code>'+(r.cloned?'':(r.cloning?' · cloning from main…':' · clones from main'))+' · spends tokens, unattended';
       }).catch(()=>{ const el=$("#lxRepo"); if(el) el.textContent=""; });
     }
   }
@@ -754,10 +763,12 @@ function renderCloud(box, entries, title, click){
 function chGbrain(){
   const from=$('pf-from').value, to=$('pf-to').value;
   const g=GB.filter(r=>(!from||r.date>=from)&&(!to||r.date<=to));
-  const reads=g.filter(r=>r.read), withHits=reads.filter(r=>r.hits>0).length;
-  const rate=reads.length?Math.round(100*withHits/reads.length):0;
-  // Card 1 — pages surfaced (the brain's MVPs)
-  $('pf-c-gb').innerHTML = reads.length ? `hit rate<br><b>${rate}%</b> of ${reads.length} reads` : `no reads`;
+  // Same filters as the headline chart (kind toggle + known signal only), so
+  // the two cards can't disagree.
+  const reads=g.filter(r=>gbKind(r)&&r.read&&gbKnown(r)), withCtx=reads.filter(gbOk).length;
+  const rate=reads.length?Math.round(100*withCtx/reads.length):0;
+  // Card 1 — pages surfaced (the brain's MVPs).
+  $('pf-c-gb').innerHTML = reads.length ? `useful context<br><b>${rate}%</b> of ${reads.length} reads` : `no reads`;
   // Count distinct brain PAGES the brain surfaced. Two cleanups so real pages
   // aren't crowded out: (1) drop raw prompt-log matches (`.../log/...`) — those
   // are transcript hits, not curated pages; (2) collapse the two slug spellings
@@ -943,10 +954,18 @@ function selectSession(sid,proj,n,per){clearSel();
 }
 
 // gbKind honors the typed/bot/all toggle for brain records (r.auto = a nightshift/bot
-// session). gbSq is a real SEARCH/QUERY — a bare `get` is a hit by definition, so it's
-// excluded from the rate denominators.
+// session). gbSq is a real SEARCH/QUERY — a get can't score a `hits` line, so it gets
+// its own success signal instead of a hits denominator.
 const gbKind=r=>KIND==='all'||(KIND==='bot'?!!r.auto:!r.auto);
 const gbSq=r=>gbKind(r)&&(r.modes||[]).some(m=>m==='search'||m==='query');
+// r.ok = the call handed back usable context (a scored result, or a get that found a
+// real page). It is logged independently of r.hits, so a successful fetch whose target
+// we couldn't parse still counts as context delivered.
+// r.okk = that signal was RECORDED (an explicit `ok`, or a search/query where hits was
+// always valid) rather than inferred. A get logged before `ok` existed is UNKNOWN: back
+// then a silent success and a 404 both wrote hits 0, so counting them either way invents
+// a number. Excluded from the denominator and reported, never silently dropped.
+const gbOk=r=>!!r.ok, gbKnown=r=>!!r.okk;
 // A search is USEFUL when the agent read one of the pages it surfaced soon after — a
 // subsequent `get` (same project) of a surfaced slug within this window. Fold both
 // sides to the canonical <project>/<page> slug first: the surfaced slug and the get
@@ -964,43 +983,70 @@ function gbUseful(s,gets){
   return gets.some(g=>g.p===s.p&&sl.includes(canonSlug(g.target))&&Date.parse(g.ts)>=t&&Date.parse(g.ts)-t<=GB_USE_MS);
 }
 
-// Two rates over time (call-count is a vanity metric — these show whether the brain
-// actually helped): HIT rate = search/query that returned ≥1 page; USEFUL rate = search
-// that was followed by a read of a surfaced page. Both honor the date + typed/bot filters.
-function chGbHit(){
-  const from=$('pf-from').value, to=$('pf-to').value;
-  const inWin=r=>(!from||r.date>=from)&&(!to||r.date<=to);
-  const g=GB.filter(r=>gbSq(r)&&inWin(r));
-  const gets=GB.filter(r=>gbKind(r)&&inWin(r)&&(r.modes||[]).includes('get')&&r.target);
-  const svg=$('pf-s-gbhit'); svg.innerHTML='';
-  if(!g.length){ svg.setAttribute('viewBox','0 0 1080 40'); svg.appendChild(txt(8,24,'no brain searches in this window',{'font-size':11,fill:'var(--muted)'})); $('pf-c-gbhit').textContent=''; return; }
-  const hitN=g.filter(r=>r.hits>0).length, useN=g.filter(r=>gbUseful(r,gets)).length;
-  $('pf-c-gbhit').innerHTML=`overall<br><b style="color:var(--ok)">${Math.round(100*hitN/g.length)}%</b> hit · <b style="color:var(--accent)">${Math.round(100*useN/g.length)}%</b> useful · ${g.length}`;
-  // one point per DAY that had searches (skip empty days) — the brain-query log is young,
-  // so daily is the right grain; the line grows denser as more days accrue.
-  const dy={}; g.forEach(r=>{const a=dy[r.date]=dy[r.date]||[0,0,0]; a[0]++; if(r.hits>0)a[1]++; if(gbUseful(r,gets))a[2]++;});
-  const series=Object.keys(dy).sort().map(k=>({k,n:dy[k][0],hit:Math.round(100*dy[k][1]/dy[k][0]),use:Math.round(100*dy[k][2]/dy[k][0])}));
-  const W=1080,L=40,R=14,top=12,bottom=24,H=180,pw=W-L-R,ph=H-top-bottom;
+// Day-series line chart for the brain rate card (0-100%). lines is a list of
+// {key,col,lbl,r,tip,click} drawn in order; series carries {k,n,<key>…} per day.
+function gbRateChart(svg,series,lines,H){
+  const W=1080,L=40,R=14,top=12,bottom=24,pw=W-L-R,ph=H-top-bottom;
   svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
   const X=i=>series.length<2?L+pw/2:L+pw*(i/(series.length-1)), Y=v=>top+ph*(1-v/100);
   [0,50,100].forEach(v=>{const y=Y(v); svg.appendChild(el('line',{x1:L,y1:y,x2:W-R,y2:y,stroke:'var(--line)','stroke-width':1}));
     svg.appendChild(txt(L-6,y+4,v+'%',{'text-anchor':'end','font-size':9,fill:'var(--muted)'}));});
-  // legend
-  [['hit','var(--ok)',W-R-140],['useful','var(--accent)',W-R-70]].forEach(([lbl,col,x])=>{
-    svg.appendChild(el('line',{x1:x,y1:top-2,x2:x+14,y2:top-2,stroke:col,'stroke-width':2}));
-    svg.appendChild(txt(x+18,top+1,lbl,{'font-size':9,fill:'var(--muted)'}));});
-  const line=(key,col)=>{let d='';series.forEach((p,i)=>{d+=(i?'L':'M')+X(i)+' '+Y(p[key])+' ';});
-    svg.appendChild(el('path',{d,fill:'none',stroke:col,'stroke-width':2}));};
-  line('use','var(--accent)'); line('hit','var(--ok)');
-  series.forEach((p,i)=>{
-    const cu=el('circle',{cx:X(i),cy:Y(p.use),r:3.5,fill:'var(--accent)'});
-    cu.appendChild(el('title')).textContent=`${p.k}: ${p.use}% useful / ${p.n} searches`; svg.appendChild(cu);
-    const miss=p.n-Math.round(p.n*p.hit/100);
-    const c=el('circle',{cx:X(i),cy:Y(p.hit),r:4,fill:'var(--ok)',class:'hit'});
-    c.appendChild(el('title')).textContent=`${p.k}: ${p.hit}% hit · ${miss} miss / ${p.n} searches — click for the misses`;
-    c.onclick=()=>selectGbMisses(p.k); svg.appendChild(c);});
+  // lay the legend out right-to-left, each slot sized to its label so entries can't overlap
+  let lx=W-R;
+  [...lines].reverse().forEach(ln=>{ lx-=ln.lbl.length*5+24;
+    svg.appendChild(el('line',{x1:lx,y1:top-2,x2:lx+14,y2:top-2,stroke:ln.col,'stroke-width':2}));
+    svg.appendChild(txt(lx+18,top+1,ln.lbl,{'font-size':9,fill:'var(--muted)'}));});
+  // A null value means the rate is undefined that day — break the line, no point.
+  lines.forEach(ln=>{let d='',pen=false;series.forEach((p,i)=>{const v=p[ln.key];
+    if(v==null){pen=false;return;} d+=(pen?'L':'M')+X(i)+' '+Y(v)+' '; pen=true;});
+    svg.appendChild(el('path',{d,fill:'none',stroke:ln.col,'fill-opacity':0,'stroke-width':2}));});
+  lines.forEach(ln=>series.forEach((p,i)=>{
+    if(p[ln.key]==null) return;
+    const c=el('circle',{cx:X(i),cy:Y(p[ln.key]),r:ln.r||3.5,fill:ln.col});
+    if(ln.click){ c.setAttribute('class','hit'); c.onclick=()=>ln.click(p.k); }
+    c.appendChild(el('title')).textContent=ln.tip(p); svg.appendChild(c);}));
   const step=Math.max(1,Math.ceil(series.length/10));
   for(let i=0;i<series.length;i+=step) svg.appendChild(txt(X(i),H-6,series[i].k.slice(5),{'font-size':8,fill:'var(--muted)','text-anchor':'middle'}));
+}
+const gbEmpty=(svg,claim,msg)=>{svg.innerHTML='';svg.setAttribute('viewBox','0 0 1080 40');
+  svg.appendChild(txt(8,24,msg,{'font-size':11,fill:'var(--muted)'})); $(claim).textContent='';};
+// Bucket records into one point per DAY that had reads (skip empty days) — the
+// brain-query log is young, so daily is the right grain.
+function gbDays(recs,num){
+  const dy={}; recs.forEach(r=>{const a=dy[r.date]=dy[r.date]||[0,0]; a[0]++; if(num(r))a[1]++;});
+  return Object.keys(dy).sort().map(k=>({k,n:dy[k][0],v:Math.round(100*dy[k][1]/dy[k][0])}));
+}
+
+// HEADLINE — Useful-Context Rate: of ALL brain reads, how often did the call hand back
+// usable context? A search/query with ≥1 result OR a get that found a real page, over
+// every read. This is the number that answers "is the brain worth calling"; the two
+// sub-rates below break it down by call type. Also plots the distinct FOLLOW-THROUGH
+// rate (a search whose surfaced page actually got read) — a different question.
+function chGbHit(){
+  const from=$('pf-from').value, to=$('pf-to').value;
+  const inWin=r=>(!from||r.date>=from)&&(!to||r.date<=to);
+  const reads=GB.filter(r=>gbKind(r)&&r.read&&inWin(r));
+  const sq=GB.filter(r=>gbSq(r)&&inWin(r));
+  const gets=GB.filter(r=>gbKind(r)&&inWin(r)&&(r.modes||[]).includes('get')&&r.target);
+  const svg=$('pf-s-gbhit'); svg.innerHTML='';
+  if(!reads.length){ gbEmpty(svg,'pf-c-gbhit','no brain reads in this window'); return; }
+  const known=reads.filter(gbKnown), unk=reads.length-known.length;
+  if(!known.length){ gbEmpty(svg,'pf-c-gbhit','no get-success signal in this window yet'); return; }
+  const okN=known.filter(gbOk).length, useN=sq.filter(r=>gbUseful(r,gets)).length;
+  const useTxt=sq.length?` · <b style="color:var(--accent)">${Math.round(100*useN/sq.length)}%</b> followed through`:'';
+  const unkTxt=unk?` <span style="color:var(--muted)">(${unk} pre-signal excluded)</span>`:'';
+  $('pf-c-gbhit').innerHTML=`<b style="color:var(--ok)">${Math.round(100*okN/known.length)}%</b> useful context of ${known.length} reads${useTxt}${unkTxt}`;
+  // Merge the two day-series: useful-context is over all reads, follow-through over
+  // search/query only, so a day can carry one and not the other. A day with no
+  // searches has NO follow-through rate (null → skipped), not an invented 0%.
+  const ctx=gbDays(known,gbOk), fu=gbDays(sq,r=>gbUseful(r,gets));
+  const fuBy={}; fu.forEach(p=>fuBy[p.k]=p);
+  const series=ctx.map(p=>({k:p.k,n:p.n,ctx:p.v,use:fuBy[p.k]?fuBy[p.k].v:null,sqN:fuBy[p.k]?fuBy[p.k].n:0}));
+  gbRateChart(svg,series,[
+    {key:'use',col:'var(--accent)',lbl:'followed through',tip:p=>`${p.k}: ${p.use}% followed through / ${p.sqN} searches`},
+    {key:'ctx',col:'var(--ok)',lbl:'useful context',r:4,click:selectGbMisses,
+     tip:p=>`${p.k}: ${p.ctx}% useful context · ${p.n-Math.round(p.n*p.ctx/100)} empty / ${p.n} reads — click for the misses`},
+  ],180);
 }
 
 // Cost Over Time — a date × hour heatmap of $ spend, grounded entirely in the
@@ -1366,8 +1412,10 @@ function selectGbQueries(w){clearSel();
 // Click a point on the hit-rate line → the brain reads that day that returned NOTHING,
 // so a low day is traceable to the exact queries that missed.
 function selectGbMisses(day){clearSel();
-  // search/query only + typed/bot filter, to match the hit-rate line's denominator.
-  const list=GB.filter(r=>gbSq(r)&&r.date===day&&!(r.hits>0))
+  // ALL reads with a real success signal + typed/bot filter, to match the
+  // useful-context line's denominator — a get that found no page is a miss here,
+  // same as a search that returned nothing.
+  const list=GB.filter(r=>gbKind(r)&&r.read&&r.date===day&&gbKnown(r)&&!gbOk(r))
     // Name the miss honestly: the search query (r.q) or the get's page slug (r.target)
     // when either survived capture; else fall back by MODE, not a blanket "page read".
     // A search/query whose text was truncated off the 300-char snippet is NOT a get — only

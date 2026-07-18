@@ -529,6 +529,71 @@ func TestEnsureNightshiftClone(t *testing.T) {
 	}
 }
 
+// The launch dialog pre-clones; the launch itself must JOIN that clone rather
+// than start a second one, and see it as already there once it lands.
+func TestPrecloneNightshift(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	q := newTestQueue(t)
+	q.NightshiftHome = filepath.Join(q.Data, "nshome")
+	rem := filepath.Join(q.Data, "rem.git")
+	wrk := filepath.Join(q.Data, "wrk")
+	mustRun(t, "git", "init", "-q", "--bare", rem)
+	mustRun(t, "git", "clone", "-q", rem, wrk)
+	if err := os.WriteFile(filepath.Join(wrk, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRun(t, "git", "-C", wrk, "add", ".")
+	mustRun(t, "git", "-C", wrk, "-c", "user.email=a@b.c", "-c", "user.name=t", "commit", "-qm", "i")
+	mustRun(t, "git", "-C", wrk, "push", "-q", "origin", "HEAD:main")
+
+	q.PrecloneNightshift(rem)
+	// concurrent callers join ONE job, so they observe the same outcome
+	notes := make(chan string, 2)
+	for i := 0; i < 2; i++ {
+		go func() { _, n := q.ensureNightshiftClone(rem); notes <- n }()
+	}
+	n1, n2 := <-notes, <-notes
+	if n1 != n2 {
+		t.Errorf("concurrent ensures = %q / %q, want one shared clone", n1, n2)
+	}
+	if _, err := os.Stat(filepath.Join(q.ClonePath(rem), ".git")); err != nil {
+		t.Fatal("pre-clone must produce the checkout")
+	}
+	if q.PrecloneNightshift(rem) {
+		t.Error("an existing clone must not report as still cloning")
+	}
+}
+
+// Two remotes sharing a basename map to ONE clone destination; a caller for the
+// second remote must get the collision note, not the first remote's checkout.
+func TestStartCloneRemoteCollision(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	q := newTestQueue(t)
+	q.NightshiftHome = filepath.Join(q.Data, "nshome")
+	mk := func(dir string) string {
+		rem := filepath.Join(q.Data, dir, "rem.git")
+		mustRun(t, "git", "init", "-q", "--bare", rem)
+		return rem
+	}
+	rem1, rem2 := mk("a"), mk("b")
+	if q.ClonePath(rem1) != q.ClonePath(rem2) {
+		t.Fatal("premise: both remotes must share a clone destination")
+	}
+	q.PrecloneNightshift(rem1)
+	if repo2, note2 := q.ensureNightshiftClone(rem2); repo2 != "" || !strings.Contains(note2, "different remote") {
+		t.Errorf("second remote must hit the collision note, got %q (%q)", repo2, note2)
+	}
+	if repo1, note1 := q.ensureNightshiftClone(rem1); repo1 != q.ClonePath(rem1) {
+		t.Errorf("first remote keeps its clone: %q (%q)", repo1, note1)
+	}
+}
+
 func mustRun(t *testing.T, name string, args ...string) {
 	t.Helper()
 	if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {

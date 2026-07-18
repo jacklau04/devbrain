@@ -67,9 +67,10 @@ func write(t *testing.T, path, content string) {
 
 // TestDistillCursorGolden pins /distill Step 2. The fixture exercises every
 // branch of the cursor logic: newer-than-cursor (new), equal (skip),
-// earlier (skip), no-cursor (new), plus cksum memory match (skip) vs
-// changed/new (fold). The ledger uses a real em-dash to prove the parsing
-// keys off the filename, not a naive split on `—`.
+// earlier (skip), no-cursor (new), non-UTF8 content (new), plus cksum memory
+// match (skip) vs changed/new (fold), plus a nested memory file sharing a
+// top-level basename. The ledger uses a real em-dash to prove the parsing keys
+// off the filename, not a naive split on `—`.
 func TestDistillCursorGolden(t *testing.T) {
 	t.Parallel()
 	script := extractMarkedBlock(t, repoPath(t, "assets/skills/distill/SKILL.md"), "golden:cursor-detect")
@@ -84,12 +85,18 @@ func TestDistillCursorGolden(t *testing.T) {
 	write(t, filepath.Join(logdir, "2026-07-01/equal.md"), "## 10:00:00\nonly\n")
 	write(t, filepath.Join(logdir, "2026-07-02/earlier.md"), "## 05:00:00\nonly\n")
 	write(t, filepath.Join(logdir, "2026-07-02/fresh.md"), "## 07:15:00\nbrand new\n")
+	// NUL byte makes grep classify the file as binary and print "Binary file … matches"
+	// instead of the timestamps, mangling both `newest` and `rec` — hence `grep -a`.
+	write(t, filepath.Join(logdir, "2026-07-02/binary.md"), "## 06:00:00\nraw \x00\xff bytes\n\n## 11:45:00\nlater\n")
 
 	// memory files — cksum is deterministic (CRC), so the golden is stable.
 	write(t, filepath.Join(memdir, "kept.md"), "unchanged memory\n")
 	write(t, filepath.Join(memdir, "changed.md"), "edited memory\n")
 	write(t, filepath.Join(memdir, "brandnew.md"), "never folded\n")
 	write(t, filepath.Join(memdir, "MEMORY.md"), "index — must be ignored\n")
+	// same basename as a top-level file: keys must be $MEMDIR-relative paths, or
+	// this inherits kept.md's cursor and is never folded.
+	write(t, filepath.Join(memdir, "nested/kept.md"), "different content, same basename\n")
 
 	// Ledger: em-dash lines. newer is behind (→ new), equal matches (→ skip),
 	// earlier is ahead (→ skip), fresh absent (→ new). kept cksum matches its
@@ -99,6 +106,7 @@ func TestDistillCursorGolden(t *testing.T) {
 		"- 2026-07-01/newer.md — through 08:00:00\n"+
 		"- 2026-07-01/equal.md — through 10:00:00\n"+
 		"- 2026-07-02/earlier.md — through 06:00:00\n"+
+		"- 2026-07-02/binary.md — through 06:00:00\n"+
 		"- memory/kept.md — cksum "+keptCksum+"\n"+
 		"- memory/changed.md — cksum 1\n")
 
