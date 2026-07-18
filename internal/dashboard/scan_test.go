@@ -394,6 +394,64 @@ func TestScanWindow(t *testing.T) {
 	}
 }
 
+// The scan is cached incrementally: an unchanged corpus reuses the snapshot;
+// a new/changed file re-parses (only) that file and surfaces on the next call.
+func TestScanCacheInvalidation(t *testing.T) {
+	t.Parallel()
+	q := newTestQueue(t)
+	day := fixedClock().Format("2006-01-02")
+	writeSession(t, q, "proj__a", day, "s1", [][2]string{{"09:00", "first prompt"}})
+
+	if got := len(q.ScanPrompts(0, "")); got != 1 {
+		t.Fatalf("want 1 prompt, got %d", got)
+	}
+	sig := q.promptCache.derivSig
+	if sig == "" {
+		t.Fatal("expected a cached signature after first scan")
+	}
+	snap := q.promptCache.derived
+	f1 := q.promptCache.files[filepath.Join(q.Data, "projects", "proj__a", "log", day, "s1.md")]
+	if f1 == nil {
+		t.Fatal("expected a per-file parse entry for s1")
+	}
+
+	// Same corpus → cache hit: signature unchanged and the SAME snapshot reused.
+	_ = q.ScanPrompts(0, "")
+	if q.promptCache.derivSig != sig {
+		t.Error("unchanged corpus should not re-sign")
+	}
+	if !sameSnapshot(q.promptCache.derived, snap) {
+		t.Error("unchanged corpus should reuse the derived snapshot, not rebuild")
+	}
+
+	// A new session file bumps the signature, re-parses only it, and shows up.
+	// The untouched file's parse template must be reused verbatim.
+	writeSession(t, q, "proj__a", day, "s2", [][2]string{{"10:00", "second prompt"}})
+	recs := q.ScanPrompts(0, "")
+	if len(recs) != 2 {
+		t.Fatalf("new sweep not picked up: want 2, got %d", len(recs))
+	}
+	if q.promptCache.derivSig == sig {
+		t.Error("corpus grew but signature did not change")
+	}
+	f1b := q.promptCache.files[filepath.Join(q.Data, "projects", "proj__a", "log", day, "s1.md")]
+	if f1b != f1 {
+		t.Error("unchanged file s1 should reuse its cached parse template, not re-parse")
+	}
+}
+
+func sameSnapshot(a, b []*Prompt) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // The committed dashboard fixture: 11 prompts, 7 typed / 4 bot — the same
 // numbers pinned by testdata/golden/api/prompts-*.json.
 func TestScanDashboardFixture(t *testing.T) {

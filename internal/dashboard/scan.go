@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -117,111 +119,236 @@ func (q *Queue) cutoffDate(days int) string {
 	return q.Now().AddDate(0, 0, -days).Format("2006-01-02")
 }
 
+// parsedFile is one log file's cached parse: the prompts it yielded, each with a
+// base Classify() kind. The cross-corpus reclassify runs later over COPIES, so
+// this template is immutable and safe to share across requests.
+type parsedFile struct {
+	sig  string // size+mtime — any append/rewrite/replace moves it
+	recs []*Prompt
+}
+
+// promptScanCache is the incremental prompt-scan cache. Parsing (regex over tens
+// of MB of logs) dominates; classifying the parsed records is cheap. So we cache
+// each file's parse keyed by its own size+mtime and re-parse ONLY the files that
+// changed since the last call — a Profile reload that added one turn re-parses
+// one file, not the whole corpus, which is what kept the load O(all history).
+// `derived` is the assembled, reclassified, sorted full corpus (fresh copies),
+// reused verbatim while the corpus signature is unchanged.
+type promptScanCache struct {
+	mu       sync.Mutex
+	files    map[string]*parsedFile // per-file templates, never mutated post-parse
+	clsSig   string                 // classifier-config signature (an edit rebuilds all)
+	derived  []*Prompt              // full-corpus snapshot; never mutated after publish
+	derivSig string                 // corpus signature that produced derived
+}
+
+// fileSig fingerprints a file by size+mtime — cheap, and it catches every way a
+// log grows (append/rewrite/replace all move mtime). It does NOT catch a
+// same-size in-place rewrite that restores the old mtime; sweeps never do that,
+// so we accept that gap rather than hash 38MB of contents on every request.
+func fileSig(fi os.FileInfo) string {
+	return strconv.FormatInt(fi.Size(), 10) + ":" + strconv.FormatInt(fi.ModTime().UnixNano(), 10)
+}
+
+// classifierSig fingerprints the classifier config so a rule edit invalidates
+// every cached classification (the parse is reused, but each record re-classifies).
+func (q *Queue) classifierSig() string {
+	fi, err := os.Stat(ClassifierPath(q.Data))
+	if err != nil {
+		return "none"
+	}
+	return fileSig(fi)
+}
+
 // ScanPrompts returns every prompt in the window, each tagged with its
-// Classify() kind (scan_prompts).
+// Classify() kind (scan_prompts). The full-corpus parse+classify is cached
+// incrementally (see promptScanCache); only the window filter runs per request.
 func (q *Queue) ScanPrompts(days int, project string) []*Prompt {
 	cutoff := q.cutoffDate(days)
-	c := LoadClassifier(q.Data)
-	out := []*Prompt{}
+	full := q.fullCorpus()
+	// Window into a FRESH slice — the cached snapshot is shared and must not be mutated.
+	out := make([]*Prompt, 0, len(full))
+	for _, r := range full {
+		if r.Date >= cutoff && (project == "" || r.P == project) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// WarmPrompts primes the scan cache so the first Profile open doesn't pay the
+// cold parse; the dashboard runs it in the background at startup.
+func (q *Queue) WarmPrompts() { q.fullCorpus() }
+
+// fullCorpus assembles the classified, sorted full-corpus snapshot, reusing the
+// cached parse of every file that hasn't changed since the last call.
+func (q *Queue) fullCorpus() []*Prompt {
 	files, _ := filepath.Glob(filepath.Join(q.projectsDir(), "*", "log", "*", "*.md"))
+	// Signature BEFORE the load: if the config is edited in between, the sig is the
+	// older one, so we cache newer rules under it — and next request's newer sig
+	// misses and rebuilds. Loading first could pin new rules under a new sig and
+	// never self-correct.
+	clsSig := q.classifierSig()
+	c := LoadClassifier(q.Data)
+
+	q.promptCache.mu.Lock()
+	defer q.promptCache.mu.Unlock()
+	pc := &q.promptCache
+
+	// Stat every file (cheap) for its signature and a combined corpus signature.
+	sigs := make(map[string]string, len(files))
+	var corpus strings.Builder
+	corpus.WriteString(clsSig)
+	corpus.WriteByte('\n')
 	for _, md := range files {
-		parts := strings.Split(md, string(os.PathSeparator))
-		date, proj := parts[len(parts)-2], parts[len(parts)-4]
-		sess := strings.TrimSuffix(parts[len(parts)-1], ".md")
-		// Classify over the FULL corpus (every project + date) so kind can't flip with the query
-		// params — repeat & cross-project-payload both need it. Project/date filters applied below.
-		raw, err := os.ReadFile(md)
+		fi, err := os.Stat(md)
 		if err != nil {
 			continue
 		}
-		lines := splitPyLines(string(raw))
-		auton := false
-		for i, l := range lines {
-			if i >= 6 {
-				break
-			}
-			if h := headerRe.FindStringSubmatch(l); h != nil {
-				auton = c.SessionIsAutonomous(h[2], h[1])
-				break
-			}
+		s := fileSig(fi)
+		sigs[md] = s
+		corpus.WriteString(md)
+		corpus.WriteByte(0)
+		corpus.WriteString(s)
+		corpus.WriteByte('\n')
+	}
+	corpusSig := corpus.String()
+	if pc.derived != nil && pc.derivSig == corpusSig {
+		return pc.derived // corpus unchanged since the last assemble
+	}
+
+	clsChanged := pc.clsSig != clsSig
+	next := make(map[string]*parsedFile, len(sigs))
+	full := []*Prompt{}
+	readErr := false
+	for _, md := range files {
+		sig, ok := sigs[md]
+		if !ok {
+			continue // stat failed above
 		}
-		i := 0
-		for i < len(lines) {
-			m := promptRe.FindStringSubmatch(lines[i])
-			if m == nil {
-				i++
+		pf := pc.files[md]
+		if clsChanged || pf == nil || pf.sig != sig {
+			recs, err := parseFile(c, md)
+			if err != nil {
+				// A transient read error must not be cached as an empty parse:
+				// skip the file this round and force a re-derive next request
+				// (readErr voids the corpus signature below), matching the old
+				// scan's retry-every-request behavior.
+				readErr = true
 				continue
 			}
-			ts := m[1]
-			var body []string
-			j := i + 1
-			for j < len(lines) && !promptRe.MatchString(lines[j]) &&
-				!strings.HasPrefix(pyLStrip(lines[j]), "↳") {
-				body = append(body, lines[j])
-				j++
-			}
-			// Normalize the two harness wrappers (Conductor's <system_instruction>
-			// prefix, Claude Code's <command-name> expansion) down to the real typed
-			// text, so the /command or question underneath drives classification,
-			// the leadSkill count, and display — not the harness boilerplate.
-			text := pyStrip(c.NormalizePrompt(pyStrip(strings.Join(body, "\n"))))
-			// Scan the response block for the `tools:` META LINE — only it
-			// counts; a response sample can quote "Skill×1" as prose.
-			var skills []string
-			for k := j; k < len(lines) && !promptRe.MatchString(lines[k]); k++ {
-				s := pyLStrip(lines[k])
-				if (strings.HasPrefix(s, "touched:") || strings.HasPrefix(s, "tools:")) &&
-					strings.Contains(s, "tools:") {
-					for _, sm := range skillMetaRe.FindAllStringSubmatch(lines[k], -1) {
-						name := pyStrip(sm[1])
-						if name == "" {
-							name = "?"
-						}
-						n, _ := pyIntStr(sm[2])
-						for x := 0; x < n; x++ {
-							skills = append(skills, name)
-						}
+			pf = &parsedFile{sig: sig, recs: recs} // new/changed file → re-parse
+		}
+		next[md] = pf               // unchanged files keep their template (and its identity) verbatim
+		for _, r := range pf.recs { // fresh copies so reclassify never mutates templates
+			cp := *r
+			full = append(full, &cp)
+		}
+	}
+	reclassifyRepeats(c, full)  // cross-corpus, before the per-request window
+	reclassifyPayloads(c, full) // single-instance agent payloads, same pass
+	sort.SliceStable(full, func(a, b int) bool { return full[a].DT < full[b].DT })
+
+	if readErr {
+		corpusSig = "" // never a cache-hit next time, so the skipped file is retried
+	}
+	pc.files, pc.clsSig, pc.derived, pc.derivSig = next, clsSig, full, corpusSig
+	return full
+}
+
+// parseFile reads one log file and returns its prompts with a base Classify()
+// kind. The cross-corpus reclassify (repeats/payloads) runs later over the
+// assembled union, so it never touches this per-file result. A read error is
+// returned (not swallowed as an empty parse) so the caller can retry rather than
+// cache the emptiness.
+func parseFile(c *Classifier, md string) ([]*Prompt, error) {
+	out := []*Prompt{}
+	parts := strings.Split(md, string(os.PathSeparator))
+	date, proj := parts[len(parts)-2], parts[len(parts)-4]
+	sess := strings.TrimSuffix(parts[len(parts)-1], ".md")
+	// Classify over the FULL corpus (every project + date) so kind can't flip with the query
+	// params — repeat & cross-project-payload both need it. Project/date filters applied below.
+	raw, err := os.ReadFile(md)
+	if err != nil {
+		return nil, err
+	}
+	lines := splitPyLines(string(raw))
+	auton := false
+	for i, l := range lines {
+		if i >= 6 {
+			break
+		}
+		if h := headerRe.FindStringSubmatch(l); h != nil {
+			auton = c.SessionIsAutonomous(h[2], h[1])
+			break
+		}
+	}
+	i := 0
+	for i < len(lines) {
+		m := promptRe.FindStringSubmatch(lines[i])
+		if m == nil {
+			i++
+			continue
+		}
+		ts := m[1]
+		var body []string
+		j := i + 1
+		for j < len(lines) && !promptRe.MatchString(lines[j]) &&
+			!strings.HasPrefix(pyLStrip(lines[j]), "↳") {
+			body = append(body, lines[j])
+			j++
+		}
+		// Normalize the two harness wrappers (Conductor's <system_instruction>
+		// prefix, Claude Code's <command-name> expansion) down to the real typed
+		// text, so the /command or question underneath drives classification,
+		// the leadSkill count, and display — not the harness boilerplate.
+		text := pyStrip(c.NormalizePrompt(pyStrip(strings.Join(body, "\n"))))
+		// Scan the response block for the `tools:` META LINE — only it
+		// counts; a response sample can quote "Skill×1" as prose.
+		var skills []string
+		for k := j; k < len(lines) && !promptRe.MatchString(lines[k]); k++ {
+			s := pyLStrip(lines[k])
+			if (strings.HasPrefix(s, "touched:") || strings.HasPrefix(s, "tools:")) &&
+				strings.Contains(s, "tools:") {
+				for _, sm := range skillMetaRe.FindAllStringSubmatch(lines[k], -1) {
+					name := pyStrip(sm[1])
+					if name == "" {
+						name = "?"
+					}
+					n, _ := pyIntStr(sm[2])
+					for x := 0; x < n; x++ {
+						skills = append(skills, name)
 					}
 				}
 			}
-			// The turn's ↳ recap line, so a drill-in shows "what happened".
-			recap := ""
-			if j < len(lines) && strings.HasPrefix(pyLStrip(lines[j]), "↳") {
-				rl := pyStrip(strings.TrimPrefix(pyLStrip(lines[j]), "↳"))
-				if _, after, found := strings.Cut(rl, "—"); found {
-					recap = pyStrip(after)
-				} else {
-					recap = rl
-				}
-			}
-			if kind := c.Classify(text, auton); kind != "" {
-				if dt, err := time.Parse("2006-01-02 15:04:05", date+" "+ts); err == nil {
-					if skills == nil {
-						skills = []string{}
-					}
-					out = append(out, &Prompt{
-						P: proj, S: sess, Date: date, Time: ts[:5],
-						DT: dt.Format("2006-01-02T15:04:05"), Hour: dt.Hour(),
-						WD: dt.Format("Mon"), Chars: utf8.RuneCountInString(text),
-						Words: len(strings.Fields(text)), X: text, Kind: kind,
-						Skills: skills, Recap: recap,
-					})
-				}
-			}
-			i = j
 		}
-	}
-	reclassifyRepeats(c, out)  // over the full per-project corpus, before the project/date filters
-	reclassifyPayloads(c, out) // single-instance agent payloads, same corpus/pre-filter pass
-	windowed := out[:0]        // now drop out-of-window / other-project records (cutoff is the always-pass sentinel for days=0)
-	for _, r := range out {
-		if r.Date >= cutoff && (project == "" || r.P == project) {
-			windowed = append(windowed, r)
+		// The turn's ↳ recap line, so a drill-in shows "what happened".
+		recap := ""
+		if j < len(lines) && strings.HasPrefix(pyLStrip(lines[j]), "↳") {
+			rl := pyStrip(strings.TrimPrefix(pyLStrip(lines[j]), "↳"))
+			if _, after, found := strings.Cut(rl, "—"); found {
+				recap = pyStrip(after)
+			} else {
+				recap = rl
+			}
 		}
+		if kind := c.Classify(text, auton); kind != "" {
+			if dt, err := time.Parse("2006-01-02 15:04:05", date+" "+ts); err == nil {
+				if skills == nil {
+					skills = []string{}
+				}
+				out = append(out, &Prompt{
+					P: proj, S: sess, Date: date, Time: ts[:5],
+					DT: dt.Format("2006-01-02T15:04:05"), Hour: dt.Hour(),
+					WD: dt.Format("Mon"), Chars: utf8.RuneCountInString(text),
+					Words: len(strings.Fields(text)), X: text, Kind: kind,
+					Skills: skills, Recap: recap,
+				})
+			}
+		}
+		i = j
 	}
-	out = windowed
-	sort.SliceStable(out, func(a, b int) bool { return out[a].DT < out[b].DT })
-	return out
+	return out, nil
 }
 
 // repeatThreshold is how many copies a group needs before it's a payload, as a function
