@@ -738,9 +738,9 @@ function applyFilters(){
   P = KIND==='all'?win : KIND==='bot'?win.filter(p=>!TYPED.has(p.kind)) : win.filter(p=>TYPED.has(p.kind));
   N=P.length;
   $('pf-kindnote').textContent=`${typed.toLocaleString()} typed · ${(win.length-typed).toLocaleString()} bot · showing ${N.toLocaleString()}`;
-  const svgs=['pf-s-proj','pf-s-projtime','pf-s-heat','pf-s-focus','pf-s-tone','pf-s-len','pf-s-plen','pf-s-conc','pf-s-skill','pf-s-gb','pf-s-gbhit','pf-s-gbret','pf-s-gbfetch','pf-s-cost','pf-s-model','pf-s-costtime','pf-s-costday','pf-s-cacheshare','pf-s-cacheturn'];
+  const svgs=['pf-s-proj','pf-s-projtime','pf-s-heat','pf-s-focus','pf-s-tone','pf-s-len','pf-s-plen','pf-s-conc','pf-s-skill','pf-s-gb','pf-s-gbhit','pf-s-cost','pf-s-model','pf-s-costtime','pf-s-costday','pf-s-cacheshare','pf-s-cacheturn'];
   if(!N){ $('pf-stats').innerHTML=''; svgs.forEach(id=>$(id).innerHTML=''); $('pf-skl-legend').innerHTML=''; $('pf-skl-chips').innerHTML=''; $('pf-gbw').innerHTML=''; $('pf-list').innerHTML='<div class="hint">no prompts in this window.</div>'; $('pf-pct').textContent=''; return; }
-  buildWords(); buildStats(); chProj(); chProjTime(); chHeat(); chFocus(); chTone(); chLen(); chPromptLen(); chConc(); chSkills(); chGbrain(); chGbHit(); chGbSplit(); chCost(); chCostTime(); chSpendComp(); chCacheTurn(); showSummary();
+  buildWords(); buildStats(); chProj(); chProjTime(); chHeat(); chFocus(); chTone(); chLen(); chPromptLen(); chConc(); chSkills(); chGbrain(); chGbHit(); chCost(); chCostTime(); chSpendComp(); chCacheTurn(); showSummary();
   matchAttnHeight();   // after chTone so its svg is measurable
   matchGbHeight();     // after chGbrain so the term cloud beside it is measurable
 }
@@ -954,28 +954,18 @@ function selectSession(sid,proj,n,per){clearSel();
 }
 
 // gbKind honors the typed/bot/all toggle for brain records (r.auto = a nightshift/bot
-// session). gbSq is a real SEARCH/QUERY; gbGet is a page fetch. They get SEPARATE
-// denominators — a get can't score a `hits` line, so mixing them understates the brain.
+// session). gbSq is a real SEARCH/QUERY — a get can't score a `hits` line, so it gets
+// its own success signal instead of a hits denominator.
 const gbKind=r=>KIND==='all'||(KIND==='bot'?!!r.auto:!r.auto);
 const gbSq=r=>gbKind(r)&&(r.modes||[]).some(m=>m==='search'||m==='query');
-const gbGet=r=>gbKind(r)&&(r.modes||[]).includes('get')&&!gbSq(r);
 // r.ok = the call handed back usable context (a scored result, or a get that found a
 // real page). It is logged independently of r.hits, so a successful fetch whose target
 // we couldn't parse still counts as context delivered.
 // r.okk = that signal was RECORDED (an explicit `ok`, or a search/query where hits was
 // always valid) rather than inferred. A get logged before `ok` existed is UNKNOWN: back
 // then a silent success and a 404 both wrote hits 0, so counting them either way invents
-// a number. Excluded from the denominators and reported, never silently dropped — the
-// gets card fills in as new records accrue.
+// a number. Excluded from the denominator and reported, never silently dropped.
 const gbOk=r=>!!r.ok, gbKnown=r=>!!r.okk;
-const gbRate=(recs,claim,noun,col)=>{
-  const kn=recs.filter(gbKnown), unk=recs.length-kn.length;
-  if(!kn.length){ $(claim).innerHTML=`<span style="color:var(--muted)">no success signal yet · ${unk} ${noun}</span>`; return null; }
-  const pct=Math.round(100*kn.filter(gbOk).length/kn.length);
-  const note=unk?` <span style="color:var(--muted)">(${unk} pre-signal ${noun} excluded)</span>`:'';
-  $(claim).innerHTML=`<b style="color:${col}">${pct}%</b> of ${kn.length} ${noun}${note}`;
-  return kn;
-};
 // A search is USEFUL when the agent read one of the pages it surfaced soon after — a
 // subsequent `get` (same project) of a surfaced slug within this window. Fold both
 // sides to the canonical <project>/<page> slug first: the surfaced slug and the get
@@ -993,12 +983,10 @@ function gbUseful(s,gets){
   return gets.some(g=>g.p===s.p&&sl.includes(canonSlug(g.target))&&Date.parse(g.ts)>=t&&Date.parse(g.ts)-t<=GB_USE_MS);
 }
 
-// Shared day-series line chart for the brain rate cards (0-100%). lines is a list of
+// Day-series line chart for the brain rate card (0-100%). lines is a list of
 // {key,col,lbl,r,tip,click} drawn in order; series carries {k,n,<key>…} per day.
-// W matters: the viewBox scales to the column, so a half-width card needs a
-// narrower box or its 8-9px axis text renders at ~4px.
-function gbRateChart(svg,series,lines,H,W){
-  W=W||1080; const L=40,R=14,top=12,bottom=24,pw=W-L-R,ph=H-top-bottom;
+function gbRateChart(svg,series,lines,H){
+  const W=1080,L=40,R=14,top=12,bottom=24,pw=W-L-R,ph=H-top-bottom;
   svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
   const X=i=>series.length<2?L+pw/2:L+pw*(i/(series.length-1)), Y=v=>top+ph*(1-v/100);
   [0,50,100].forEach(v=>{const y=Y(v); svg.appendChild(el('line',{x1:L,y1:y,x2:W-R,y2:y,stroke:'var(--line)','stroke-width':1}));
@@ -1061,24 +1049,6 @@ function chGbHit(){
   ],180);
 }
 
-// BREAKDOWN — the same successes split by call type, each with its OWN denominator so
-// neither counts the other's calls: retrieval quality asks "does the brain find things
-// when asked" (search/query), fetch success asks "are our slug pointers intact" (get).
-function chGbSplit(){
-  const from=$('pf-from').value, to=$('pf-to').value;
-  const inWin=r=>(!from||r.date>=from)&&(!to||r.date<=to);
-  [['pf-s-gbret','pf-c-gbret',GB.filter(r=>gbSq(r)&&inWin(r)),'searches','no brain searches in this window','var(--ok)'],
-   ['pf-s-gbfetch','pf-c-gbfetch',GB.filter(r=>gbGet(r)&&inWin(r)),'fetches','no page fetches in this window','var(--accent)'],
-  ].forEach(([sid,cid,recs,noun,empty,col])=>{
-    const svg=$(sid); svg.innerHTML='';
-    if(!recs.length){ gbEmpty(svg,cid,empty); return; }
-    const kn=gbRate(recs,cid,noun,col); // sets the claim either way — don't clear it
-    if(!kn){ svg.setAttribute('viewBox','0 0 520 40');   // half-width box, or the text renders tiny
-      svg.appendChild(txt(8,24,'no success signal for these yet',{'font-size':11,fill:'var(--muted)'})); return; }
-    gbRateChart(svg,gbDays(kn,gbOk),[{key:'v',col,lbl:noun,r:3.5,
-      tip:p=>`${p.k}: ${p.v}% · ${p.n-Math.round(p.n*p.v/100)} empty / ${p.n} ${noun}`}],150,520);
-  });
-}
 // Cost Over Time — a date × hour heatmap of $ spend, grounded entirely in the
 // tokens.jsonl sidecar (via /api/tokens), NOT ~/.claude logs. Each cell is the true
 // spend (incl. cache) for that local day+hour; the date axis is continuous across the
